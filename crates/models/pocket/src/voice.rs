@@ -18,6 +18,11 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 /// Predefined stock voices from `kyutai/pocket-tts-without-voice-cloning` (the pocket-tts v2 set).
+///
+/// **Voices are language-specific.** Five are native to a non-English language; the rest are
+/// English. Pair each with the matching language model (resolution is per-model anyway):
+/// `juergen` → de, `lola` → es, `estelle` → fr, `giovanni` → it, `rafael` → pt; all others → en.
+/// See [`predefined_voice_language`].
 pub const PREDEFINED_VOICES: &[&str] = &[
     "alba",
     "anna",
@@ -27,26 +32,49 @@ pub const PREDEFINED_VOICES: &[&str] = &[
     "charles",
     "cosette",
     "eponine",
+    "estelle",
     "eve",
     "fantine",
     "george",
+    "giovanni",
     "jane",
     "javert",
     "jean",
+    "juergen",
+    "lola",
     "marius",
     "mary",
     "michael",
     "paul",
     "peter_yearsley",
+    "rafael",
     "stuart_bell",
     "vera",
 ];
 
+/// The language a predefined voice is native to (config-stem family: `en`/`de`/`es`/`fr`/`it`/`pt`).
+/// Returns `None` for unknown names. The five non-English voices are the only ones not `en`.
+pub fn predefined_voice_language(name: &str) -> Option<&'static str> {
+    if !PREDEFINED_VOICES.contains(&name) {
+        return None;
+    }
+    Some(match name {
+        "juergen" => "de",
+        "lola" => "es",
+        "estelle" => "fr",
+        "giovanni" => "it",
+        "rafael" => "pt",
+        _ => "en",
+    })
+}
+
 /// HuggingFace repo for stock voice embeddings.
 const STOCK_VOICE_REPO: &str = "kyutai/pocket-tts-without-voice-cloning";
 
-/// Pinned revision of the stock-voice repo (matches pocket-tts v2's `get_predefined_voice`).
-const STOCK_VOICE_REV: &str = "d29db7978e464fb90cb3359ee0c69a273b9142cc";
+/// Pinned revision of the stock-voice repo. Bumped from the original `d29db79` (which predated the
+/// non-English voices) to `main` @ `e041936c`, which ships all 26 — including the per-language
+/// native voices (`juergen`/`lola`/`estelle`/`giovanni`/`rafael`).
+const STOCK_VOICE_REV: &str = "e041936c75475d350b405bc870bcf7c22da4e9e6";
 
 /// HF path of a **per-language** predefined voice embedding (pocket-tts v2 layout).
 pub fn predefined_voice_hf_path(language: &str, name: &str) -> String {
