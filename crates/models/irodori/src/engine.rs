@@ -101,7 +101,10 @@ impl Irodori {
                 let mono = if audio.dim(0)? > 1 { audio.mean_keepdim(0)? } else { audio };
                 let mono = tts_core::audio::resample(&mono, sr, self.sample_rate() as u32)?;
                 let m = mono.dim(1)?;
-                let ref_latent = self.dacvae.encode(&mono.reshape((1, 1, m))?)?; // (1,T,32)
+                // read_wav/resample produce a CPU tensor; move it onto the engine's device
+                // (else conv1d weights-on-Metal vs input-on-CPU → device mismatch).
+                let audio_in = mono.reshape((1, 1, m))?.to_device(&self.device)?;
+                let ref_latent = self.dacvae.encode(&audio_in)?; // (1,T,32)
                 let t = ref_latent.dim(1)?;
                 (ref_latent, Tensor::ones((1, t), DType::F32, &self.device)?)
             }
