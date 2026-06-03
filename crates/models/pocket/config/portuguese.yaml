@@ -1,6 +1,7 @@
 # sig: 4a4b1e3a.yaml
 
-weights_path: hf://kyutai/pocket-tts/languages/portuguese/model.safetensors@39592ff23c9ef80098bb74895d104c26275fe2c9
+# f32 source: hf://kyutai/pocket-tts/languages/portuguese/model.safetensors@39592ff23c9ef80098bb74895d104c26275fe2c9
+weights_path: hf://zwaiwng/maneko/pocket-tts/languages/portuguese/model.q8.gguf@6344b7d1f21e7281910b81017982f28ad4fd6149
 weights_path_without_voice_cloning: hf://kyutai/pocket-tts-without-voice-cloning/languages/portuguese/model.safetensors@d29db7978e464fb90cb3359ee0c69a273b9142cc
 
 

@@ -136,7 +136,7 @@ pub mod defaults {
     pub const LSD_DECODE_STEPS: usize = 1;
     pub const NOISE_CLAMP: Option<f32> = None;
     pub const EOS_THRESHOLD: f32 = -4.0;
-    pub const DEFAULT_VARIANT: &str = "b6369a24";
+    pub const DEFAULT_VARIANT: &str = "english_2026-04";
 }
 
 #[cfg(test)]
@@ -152,7 +152,7 @@ mod tests {
             .unwrap()
             .join("pocket_tts")
             .join("config")
-            .join("b6369a24.yaml")
+            .join("english_2026-04.yaml")
     }
 
     #[test]

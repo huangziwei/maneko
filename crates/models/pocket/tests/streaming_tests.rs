@@ -20,7 +20,7 @@ mod tests {
     #[test]
     fn test_streaming_matches_batch() -> Result<()> {
         // Load model (assumes weights are present from previous phases)
-        let mut model = TTSModel::load("b6369a24")?;
+        let mut model = TTSModel::load("english_2026-04")?;
 
         // Use deterministic settings for comparison
         model.temp = 0.0;
@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn test_streaming_yields_multiple_chunks() -> Result<()> {
-        let mut model = TTSModel::load("b6369a24")?;
+        let mut model = TTSModel::load("english_2026-04")?;
         model.temp = 0.0;
 
         let root_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -118,7 +118,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_long_text_handling() -> Result<()> {
-        let mut model = TTSModel::load("b6369a24")?;
+        let mut model = TTSModel::load("english_2026-04")?;
         model.temp = 0.0;
 
         let root_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

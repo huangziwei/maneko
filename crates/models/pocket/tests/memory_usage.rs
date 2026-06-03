@@ -9,8 +9,8 @@ mod tests {
     fn test_long_audio_prompt_memory() -> anyhow::Result<()> {
         println!("Loading model...");
         // Assuming weights are available for this variant.
-        // User's context implies "b6369a24" is relevant.
-        let model = TTSModel::load("b6369a24")?;
+        // User's context implies "english_2026-04" is relevant.
+        let model = TTSModel::load("english_2026-04")?;
 
         println!("Creating long audio input (5 minutes @ 24kHz)...");
         // 5 * 60 * 24000 = 7,200,000 samples

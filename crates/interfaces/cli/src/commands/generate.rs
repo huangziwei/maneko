@@ -43,8 +43,8 @@ pub struct GenerateArgs {
     #[arg(short, long, default_value = "output.wav")]
     pub output: PathBuf,
 
-    /// [pocket] Language / config stem: english, german, french_24l, b6369a24, …
-    #[arg(short, long, default_value = "b6369a24")]
+    /// [pocket] Language / config stem: english_2026-04, german, french_24l, …
+    #[arg(short, long, default_value = "english_2026-04")]
     pub language: String,
 
     /// [irodori] Target duration in seconds (default: model fallback, trimmed to silence).

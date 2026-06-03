@@ -9,12 +9,12 @@
 //! use pocket::Engine;
 //! use candle_core::Device;
 //! let mut engine = Engine::new(Device::Cpu);
-//! let en = engine.generate("Hello.",        "b6369a24", Some("alba"))?;
+//! let en = engine.generate("Hello.",        "english_2026-04", Some("alba"))?;
 //! let de = engine.generate("Hallo, Welt.",  "german",   Some("alba"))?; // loads german, reuses cache next time
 //! # Ok::<(), anyhow::Error>(())
 //! ```
 //!
-//! `language` is a **config stem** (e.g. `"german"`, `"french_24l"`, `"b6369a24"`) — the same
+//! `language` is a **config stem** (e.g. `"english_2026-04"`, `"german"`, `"french_24l"`) — the same
 //! identifier [`TTSModel::load`] accepts and a file under `config/`. Mapping a human language name
 //! (+ layer choice) to a stem is the caller's concern; the engine routes on the stem.
 

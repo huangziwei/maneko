@@ -3,8 +3,8 @@
 //! ```python
 //! import maneko
 //! p = maneko.Pocket()
-//! audio = p.generate("Hello world.", language="b6369a24")        # list[float], 24 kHz
-//! maneko.save_wav("out.wav", audio, p.sample_rate("b6369a24"))
+//! audio = p.generate("Hello world.", language="english_2026-04")  # list[float], 24 kHz
+//! maneko.save_wav("out.wav", audio, p.sample_rate("english_2026-04"))
 //!
 //! i = maneko.Irodori()
 //! jp = i.generate("こんにちは。", voice="ref.wav", seconds=4, steps=40)  # 48 kHz
@@ -39,9 +39,9 @@ impl Pocket {
 
     /// Generate speech → mono `list[float]` at 24 kHz.
     ///
-    /// `language` is a config stem (`english`, `german`, `french_24l`, `b6369a24`, …).
+    /// `language` is a config stem (`english_2026-04`, `german`, `french_24l`, …).
     /// `voice` is a predefined name / `.wav` / `.safetensors` / `hf://` / base64 (default: stock).
-    #[pyo3(signature = (text, language="b6369a24", voice=None))]
+    #[pyo3(signature = (text, language="english_2026-04", voice=None))]
     fn generate(&mut self, text: &str, language: &str, voice: Option<&str>) -> PyResult<Vec<f32>> {
         let audio = self.engine.generate(text, language, voice).map_err(rt_err)?;
         flatten_audio(audio)

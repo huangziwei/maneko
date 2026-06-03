@@ -45,7 +45,7 @@ fn get_model() -> &'static TTSModel {
     let _guard = model_init_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    MODEL.get_or_init(|| TTSModel::load("b6369a24").expect("Failed to load model"))
+    MODEL.get_or_init(|| TTSModel::load("english_2026-04").expect("Failed to load model"))
 }
 
 /// Get or initialize the shared TTSModel instance with custom parameters.
@@ -55,7 +55,7 @@ fn get_model_with_params() -> &'static TTSModel {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     MODEL_WITH_PARAMS.get_or_init(|| {
         TTSModel::load_with_params(
-            "b6369a24",
+            "english_2026-04",
             0.0,
             pocket::config::defaults::LSD_DECODE_STEPS,
             pocket::config::defaults::EOS_THRESHOLD,
@@ -102,7 +102,7 @@ fn test_download_gated_weights() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let path =
-        "hf://kyutai/pocket-tts/tts_b6369a24.safetensors@427e3d61b276ed69fdd03de0d185fa8a8d97fc5b";
+        "hf://kyutai/pocket-tts/languages/english_2026-04/model.safetensors@19f95fe2df36e79fbd9f10008595cc4c977a0fcc";
     let result = download_if_necessary(path);
     assert!(result.is_ok(), "Failed to download: {:?}", result.err());
 }
@@ -336,7 +336,7 @@ fn test_load_quantized_model() {
     let _guard = model_init_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let model = TTSModel::load_quantized("b6369a24").expect("Failed to load quantized model");
+    let model = TTSModel::load_quantized("english_2026-04").expect("Failed to load quantized model");
 
     // Verify model loaded
     assert_eq!(model.sample_rate, 24000);

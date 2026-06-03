@@ -63,7 +63,7 @@ impl TTSModel {
     /// Load a pre-trained TTS model from HuggingFace
     ///
     /// # Arguments
-    /// * `variant` - Model variant (e.g., "b6369a24")
+    /// * `variant` - Model variant / config stem (e.g., "english_2026-04")
     ///
     /// # Returns
     /// Fully initialized TTSModel ready for generation
@@ -176,7 +176,7 @@ impl TTSModel {
     /// reducing memory usage while maintaining acceptable quality.
     ///
     /// # Arguments
-    /// * `variant` - Model variant (e.g., "b6369a24")
+    /// * `variant` - Model variant / config stem (e.g., "english_2026-04")
     ///
     /// # Returns
     /// TTSModel with quantized weights
@@ -261,10 +261,15 @@ impl TTSModel {
             .ok_or_else(|| anyhow::anyhow!("weights_path not specified in config"))?;
         let weights_file = crate::weights::download_if_necessary(weights_path)?;
 
-        // Load safetensors with VarBuilder (full precision)
-        let vb = Vb::Full(unsafe {
-            VarBuilder::from_mmaped_safetensors(&[weights_file], dtype, device)?
-        });
+        // Auto-route by container: a `.gguf` weights_path is a pre-quantized model (Q8_0 Linear
+        // weights + F16 rest) loaded via the quant path; anything else is full-precision
+        // safetensors. This is the single switch for "default to q8" — point a config's
+        // `weights_path` at a published GGUF and the rest of the pipeline is unchanged.
+        let vb = if weights_file.extension().and_then(|e| e.to_str()) == Some("gguf") {
+            Vb::from_gguf(&weights_file, device)?
+        } else {
+            Vb::Full(unsafe { VarBuilder::from_mmaped_safetensors(&[weights_file], dtype, device)? })
+        };
 
         // Download tokenizer
         let tokenizer_path =
@@ -1479,7 +1484,7 @@ mod tests {
     #[test]
     fn test_find_config_path() {
         // This MUST pass now that we've moved the config into the crate
-        let result = find_config_path("b6369a24");
+        let result = find_config_path("english_2026-04");
         assert!(result.is_ok(), "Config file should be found");
         let path = result.unwrap();
         assert!(path.exists(), "Config file path should exist");

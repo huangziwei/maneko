@@ -56,6 +56,7 @@ fn assert_tensors_approx_eq(t1: &Tensor, t2: &Tensor, tolerance: f32) {
     );
 }
 
+#[ignore = "v1 (b6369a24) parity goldens; v1 retired - regenerate for a v2 model to re-enable"]
 #[test]
 fn test_voice_conditioning_parity() {
     let ref_path = get_assets_root().join("ref_voice_conditioning.safetensors");
@@ -141,6 +142,7 @@ fn test_voice_conditioning_parity() {
     assert_tensors_approx_eq(&conditioning, ref_cond, 2e-2);
 }
 
+#[ignore = "v1 (b6369a24) parity goldens; v1 retired - regenerate for a v2 model to re-enable"]
 #[test]
 fn test_mimi_latents_parity() {
     let ref_path = get_assets_root().join("ref_mimi_latents.safetensors");
@@ -375,6 +377,7 @@ fn test_mimi_latents_parity() {
     assert_tensors_approx_eq(&latents, ref_latents, 0.1);
 }
 
+#[ignore = "v1 (b6369a24) parity goldens; v1 retired - regenerate for a v2 model to re-enable"]
 #[test]
 fn test_input_parity() {
     let ref_path = get_assets_root().join("ref_mimi_input.safetensors");
@@ -432,6 +435,7 @@ fn test_input_parity() {
     assert_tensors_approx_eq(&audio, ref_input, 0.3);
 }
 
+#[ignore = "v1 (b6369a24) parity goldens; v1 retired - regenerate for a v2 model to re-enable"]
 #[test]
 fn test_audio_generation_parity() {
     let ref_path = get_assets_root().join("ref_output.wav");
@@ -517,6 +521,7 @@ fn test_audio_generation_parity() {
     );
 }
 
+#[ignore = "v1 (b6369a24) parity goldens; v1 retired - regenerate for a v2 model to re-enable"]
 #[test]
 fn test_decoder_parity() {
     let ref_path = get_assets_root().join("ref_decoder_intermediates.safetensors");

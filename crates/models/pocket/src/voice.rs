@@ -179,8 +179,8 @@ pub fn resolve_voice_spec(
 /// Resolve a predefined voice name to embeddings via HF Hub.
 ///
 /// v2 ships per-language embeddings (`…/languages/{lang}/embeddings/{name}.safetensors`); when a
-/// `language` is known we use that path, falling back to the flat (v1) `…/embeddings/{name}` path
-/// if the per-language file is unavailable (e.g. the v1 `b6369a24` model).
+/// `language` is known we use that path, falling back to the flat `…/embeddings/{name}` path if the
+/// per-language file is unavailable.
 fn resolve_predefined_voice(
     model: &TTSModel,
     name: &str,

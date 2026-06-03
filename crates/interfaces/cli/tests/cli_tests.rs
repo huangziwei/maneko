@@ -17,7 +17,7 @@ fn cli_generate_pocket() {
     let _ = std::fs::remove_file(out);
     #[allow(deprecated)]
     let mut cmd = Command::cargo_bin("tts").unwrap();
-    cmd.args(["generate", "--engine", "pocket", "--language", "b6369a24", "--text", "Hello from the CLI.", "--output", out])
+    cmd.args(["generate", "--engine", "pocket", "--language", "english_2026-04", "--text", "Hello from the CLI.", "--output", out])
         .assert()
         .success();
     assert!(Path::new(out).exists());
