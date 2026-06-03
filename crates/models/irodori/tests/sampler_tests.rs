@@ -6,7 +6,7 @@
 //!   HF_HOME=$HOME/.cache/huggingface cargo test -p irodori --features accelerate \
 //!     sampler -- --ignored --nocapture
 
-use candle_core::{DType, Device, Tensor};
+use candle_core::{DType, Device};
 use candle_nn::VarBuilder;
 use irodori::weights::hf_file;
 use irodori::{sample_euler_cfg, DitConfig, IrodoriDiT, SamplerConfig};

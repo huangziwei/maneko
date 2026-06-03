@@ -112,10 +112,10 @@ pub fn run(args: GenerateArgs) -> Result<()> {
     };
     let gen_s = t.elapsed().as_secs_f64();
 
-    if let Some(parent) = args.output.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = args.output.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
     }
     tts_core::audio::write_wav(&args.output, &audio, sample_rate as u32)?;
 

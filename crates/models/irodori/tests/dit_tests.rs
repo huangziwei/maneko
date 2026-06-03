@@ -6,7 +6,7 @@
 //!   HF_HOME=$HOME/.cache/huggingface cargo test -p irodori --features accelerate \
 //!     dit_vpred -- --ignored --nocapture
 
-use candle_core::{DType, Device, Result, Tensor};
+use candle_core::{DType, Device};
 use candle_nn::VarBuilder;
 use irodori::weights::hf_file;
 use irodori::{DitConfig, IrodoriDiT};

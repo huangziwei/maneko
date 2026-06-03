@@ -19,7 +19,7 @@ path = "src/main.rs"
 
 [features]
 default = []
-quantized = ["pocket/quantized"]
+# NOTE: int8/quantized is a pocket capability but not yet wired through Engine/CLI (P4 perf pass).
 metal = ["pocket/metal", "irodori/metal", "tts-core/metal"]
 mkl = ["pocket/mkl", "irodori/mkl", "tts-core/mkl"]
 accelerate = ["pocket/accelerate", "irodori/accelerate", "tts-core/accelerate"]

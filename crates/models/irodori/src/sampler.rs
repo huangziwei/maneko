@@ -102,5 +102,5 @@ pub fn sample_euler_cfg(
 
         x = (&x + (v_pred * (t_next - t))?)?;
     }
-    Ok(x.to_dtype(DType::F32)?)
+    x.to_dtype(DType::F32)
 }

@@ -6,7 +6,7 @@ by maneko's code license.
 
 Their notices follow.
 
-1. pocket-tts — Rust/Candle port (the seed for crates/pocket-tts{,-cli,-bindings})
+1. pocket-tts — Rust/Candle port (the seed for crates/models/pocket and crates/interfaces/{cli,python})
    © Pocket TTS Contributors (babybirdprd). MIT.
    https://github.com/babybirdprd/pocket-tts
    Upstream copy vendored at ref/pocket-tts-rs (rev dbf78c8).

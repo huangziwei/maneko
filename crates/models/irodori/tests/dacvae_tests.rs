@@ -87,6 +87,24 @@ fn decode_matches_golden() -> anyhow::Result<()> {
 }
 
 #[test]
+#[ignore = "needs local weights + golden (run ref/tools/dump_golden_decode_chunked.py first)"]
+fn decode_chunked_matches_golden() -> anyhow::Result<()> {
+    let dev = Device::Cpu;
+    let golden_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../.cache/golden/dacvae_decode_chunked.safetensors");
+    assert!(golden_path.exists(), "missing golden at {golden_path:?}; run dump_golden_decode_chunked.py");
+    let g = candle_core::safetensors::load(&golden_path, &dev)?;
+    let dac = Dacvae::from_hf(&dev)?;
+    let wav = dac.decode_chunked(g.get("latent").unwrap(), 50, 4)?.flatten_all()?;
+    let golden = g.get("wav").unwrap();
+    assert_eq!(wav.elem_count(), golden.elem_count(), "chunked decode length");
+    let diff = max_abs_diff(&wav, golden)?;
+    eprintln!("chunked decode vs MLX golden: max_abs_diff={diff:.3e}");
+    assert!(diff < 1e-3, "chunked decode diverges from MLX golden: {diff}");
+    Ok(())
+}
+
+#[test]
 #[ignore = "needs local weights + golden (run ref/tools/dump_golden_encode.py first)"]
 fn encode_matches_golden() -> anyhow::Result<()> {
     let dev = Device::Cpu;

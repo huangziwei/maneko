@@ -40,7 +40,7 @@ fn wn_convtr1d(w: &Weights, base: &str, stride: usize) -> Result<ConvTranspose1d
     )?;
     let bias = w.get(&format!("{base}.bias"))?.clone();
     let cfg = ConvTranspose1dConfig {
-        padding: (stride + 1) / 2,
+        padding: stride.div_ceil(2),
         output_padding: 0,
         stride,
         dilation: 1,
@@ -275,7 +275,9 @@ impl Dacvae {
         Ok(Self::load(&w, DacvaeConfig::v2())?)
     }
 
-    /// Decode a VAE latent `(B, codebook_dim, T)` → waveform `(B, 1, T·hop)` in `[-1, 1]`.
+    /// Decode a VAE latent `(B, codebook_dim, T)` → waveform `(B, 1, T·hop)` in `[-1, 1]`,
+    /// in a single pass. For long sequences prefer [`decode_chunked`](Self::decode_chunked) to
+    /// bound the conv-transpose intermediates' memory.
     pub fn decode(&self, latent: &Tensor) -> Result<Tensor> {
         let emb = self.quantizer_out_proj.forward(latent)?; // (B, latent_dim, T)
         let mut x = self.conv_in.forward(&emb)?; // (B, decoder_dim, T)
@@ -286,4 +288,66 @@ impl Dacvae {
         let x = self.conv_out.forward(&x)?; // (B, 1, L)
         x.tanh()
     }
+
+    /// Decode in overlapping `chunk_size`-frame windows with a linear crossfade over `overlap`
+    /// frames, bounding peak memory (a single-pass 750-frame decode builds multi-GB intermediates).
+    /// Matches `DACVAE._decode_chunked` in mlx-audio. Falls back to [`decode`](Self::decode) when
+    /// the whole sequence fits in one chunk (so short clips are bit-identical to single-pass).
+    pub fn decode_chunked(&self, latent: &Tensor, chunk_size: usize, overlap: usize) -> Result<Tensor> {
+        let total = latent.dim(D::Minus1)?;
+        if total <= chunk_size {
+            return self.decode(latent);
+        }
+        let overlap_samples = overlap * self.cfg.hop_length();
+        let dev = latent.device();
+
+        // Decode each window (each re-decodes `overlap` frames of context shared with its neighbour).
+        let mut chunks: Vec<Tensor> = Vec::new();
+        let mut start = 0;
+        loop {
+            let end = (start + chunk_size).min(total);
+            let out = self.decode(&latent.narrow(D::Minus1, start, end - start)?)?; // (B,1,cf·hop)
+            chunks.push(out);
+            if end >= total {
+                break;
+            }
+            start = end - overlap;
+        }
+        if chunks.len() == 1 {
+            return Ok(chunks.into_iter().next().unwrap());
+        }
+
+        // Linear crossfade the `overlap_samples`-long seams (a 1→0 tail + 0→1 head, summed).
+        let fade_out = ramp(overlap_samples, 1.0, 0.0, dev)?; // (1,1,overlap_samples)
+        let fade_in = ramp(overlap_samples, 0.0, 1.0, dev)?;
+        let n = chunks.len();
+        let mut parts: Vec<Tensor> = Vec::new();
+        for (i, chunk) in chunks.iter().enumerate() {
+            let clen = chunk.dim(D::Minus1)?;
+            let head = || chunk.narrow(D::Minus1, 0, overlap_samples)?.broadcast_mul(&fade_in);
+            if i == 0 {
+                let fade_out_start = clen - overlap_samples;
+                parts.push(chunk.narrow(D::Minus1, 0, fade_out_start)?);
+                parts.push(chunk.narrow(D::Minus1, fade_out_start, overlap_samples)?.broadcast_mul(&fade_out)?);
+            } else if i == n - 1 {
+                let prev = parts.pop().unwrap();
+                parts.push((prev + head()?)?);
+                parts.push(chunk.narrow(D::Minus1, overlap_samples, clen - overlap_samples)?);
+            } else {
+                let prev = parts.pop().unwrap();
+                parts.push((prev + head()?)?);
+                parts.push(chunk.narrow(D::Minus1, overlap_samples, clen - 2 * overlap_samples)?);
+                parts.push(chunk.narrow(D::Minus1, clen - overlap_samples, overlap_samples)?.broadcast_mul(&fade_out)?);
+            }
+        }
+        let refs: Vec<&Tensor> = parts.iter().collect();
+        Tensor::cat(&refs, D::Minus1)
+    }
+}
+
+/// A length-`n` linear ramp `from → to` shaped `(1, 1, n)` for NCL crossfade broadcasting.
+fn ramp(n: usize, from: f64, to: f64, device: &candle_core::Device) -> Result<Tensor> {
+    let denom = (n.max(2) - 1) as f64;
+    let v: Vec<f32> = (0..n).map(|i| (from + (to - from) * i as f64 / denom) as f32).collect();
+    Tensor::from_vec(v, (1, 1, n), device)
 }

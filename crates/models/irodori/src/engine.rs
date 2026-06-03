@@ -35,15 +35,10 @@ fn find_silence_point(latent: &Tensor) -> Result<usize> {
 }
 
 /// Generation knobs. `seconds` sets the output length (else the 30 s fallback, 750 frames).
+#[derive(Default)]
 pub struct GenerateOptions {
     pub seconds: Option<f64>,
     pub sampler: SamplerConfig,
-}
-
-impl Default for GenerateOptions {
-    fn default() -> Self {
-        Self { seconds: None, sampler: SamplerConfig::default() }
-    }
 }
 
 /// The Irodori TTS engine: DiT + DACVAE + llm-jp tokenizer.
@@ -84,7 +79,9 @@ impl Irodori {
         let steps = latent.dim(1)?;
         let hop = self.dacvae.hop_length();
 
-        let audio = self.dacvae.decode(&latent.transpose(1, 2)?.contiguous()?)?; // (1,1,L)
+        // Chunked decode (chunk_size=50, overlap=4) — matches mlx-audio's generate and bounds the
+        // conv-transpose memory; for ≤50-frame clips this is single-pass.
+        let audio = self.dacvae.decode_chunked(&latent.transpose(1, 2)?.contiguous()?, 50, 4)?; // (1,1,L)
         let silence_t = find_silence_point(&latent.get(0)?)?;
         let trim = (silence_t * hop).min(steps * hop).min(audio.dim(2)?);
         Ok(audio.narrow(2, 0, trim)?.reshape((1, trim))?)
