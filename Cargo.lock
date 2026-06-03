@@ -1864,10 +1864,11 @@ dependencies = [
 name = "maneko-py"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "candle-core",
+ "irodori",
  "pocket",
  "pyo3",
+ "tts-core",
 ]
 
 [[package]]
@@ -3573,13 +3574,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
- "base64 0.21.7",
  "candle-core",
  "clap",
  "hound",
- "indicatif",
+ "irodori",
  "owo-colors",
  "pocket",
+ "tts-core",
 ]
 
 [[package]]

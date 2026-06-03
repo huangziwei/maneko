@@ -20,18 +20,18 @@ path = "src/main.rs"
 [features]
 default = []
 quantized = ["pocket/quantized"]
-metal = ["pocket/metal"]
-mkl = ["pocket/mkl"]
-accelerate = ["pocket/accelerate"]
+metal = ["pocket/metal", "irodori/metal", "tts-core/metal"]
+mkl = ["pocket/mkl", "irodori/mkl", "tts-core/mkl"]
+accelerate = ["pocket/accelerate", "irodori/accelerate", "tts-core/accelerate"]
 
 [dependencies]
 pocket = { path = "../../models/pocket" }
+irodori = { path = "../../models/irodori" }
+tts-core = { path = "../../core" }
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
-indicatif = "0.17"
 owo-colors = "4"
 candle-core.workspace = true
-base64 = "0.21"
 
 [dev-dependencies]
 assert_cmd = "2.0"

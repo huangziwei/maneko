@@ -1,19 +1,20 @@
-//! maneko CLI — the pocket-tts engine: text -> wav, with optional voice cloning.
+//! maneko CLI — text → wav over both engines (pocket-tts + Irodori), with voice cloning.
 
 use anyhow::Result;
 use clap::Parser;
 
 use tts_cli::commands;
 
-/// maneko / pocket-tts — high-quality text-to-speech, fast on CPU.
+/// maneko — native Rust/Candle text-to-speech.
 #[derive(Parser)]
 #[command(
     name = "tts",
     author,
     version,
-    about = "maneko / pocket-tts - text to speech",
-    long_about = "A Rust/Candle TTS engine (pocket-tts). Generate natural speech from text, \
-                  with voice cloning from audio samples."
+    about = "maneko — text to speech (pocket-tts + Irodori)",
+    long_about = "A Rust/Candle TTS engine. Generate speech from text with voice cloning, using \
+                  either the pocket-tts (multilingual, 24 kHz) or Irodori (Japanese, 48 kHz) \
+                  engine via --engine."
 )]
 struct Args {
     #[command(subcommand)]

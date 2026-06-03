@@ -2,72 +2,44 @@ use assert_cmd::Command;
 use std::path::Path;
 
 #[test]
-fn test_cli_help() {
+fn cli_help_lists_engine_flag() {
     #[allow(deprecated)]
     let mut cmd = Command::cargo_bin("tts").unwrap();
-    cmd.arg("--help").assert().success();
+    let out = cmd.arg("generate").arg("--help").assert().success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).to_string();
+    assert!(stdout.contains("--engine"), "generate --help should advertise --engine");
 }
 
 #[test]
-fn test_cli_generate_basic() {
-    let output_file = "test_cli_gen.wav";
-    // Clean up if exists
-    if Path::new(output_file).exists() {
-        std::fs::remove_file(output_file).unwrap();
-    }
-
+#[ignore = "needs pocket weights + HF_HOME=$PWD/.cache/huggingface"]
+fn cli_generate_pocket() {
+    let out = "test_cli_pocket.wav";
+    let _ = std::fs::remove_file(out);
     #[allow(deprecated)]
     let mut cmd = Command::cargo_bin("tts").unwrap();
-    cmd.arg("generate")
-        .arg("--text")
-        .arg("Hello world from CLI test")
-        .arg("--output")
-        .arg(output_file)
+    cmd.args(["generate", "--engine", "pocket", "--language", "b6369a24", "--text", "Hello from the CLI.", "--output", out])
         .assert()
         .success();
-
-    // Check if file created
-    assert!(Path::new(output_file).exists());
-
-    // Check if valid WAV
-    let reader = hound::WavReader::open(output_file).unwrap();
-    assert!(reader.duration() > 0);
-
-    // Cleanup
-    std::fs::remove_file(output_file).unwrap();
+    assert!(Path::new(out).exists());
+    assert!(hound::WavReader::open(out).unwrap().duration() > 0);
+    std::fs::remove_file(out).unwrap();
 }
 
 #[test]
-fn test_cli_generate_with_voice() {
-    let output_file = "test_cli_voice.wav";
-    if Path::new(output_file).exists() {
-        std::fs::remove_file(output_file).unwrap();
-    }
-
+#[ignore = "needs Irodori weights + HF_HOME=$HOME/.cache/huggingface"]
+fn cli_generate_irodori() {
+    let out = "test_cli_irodori.wav";
+    let _ = std::fs::remove_file(out);
     #[allow(deprecated)]
     let mut cmd = Command::cargo_bin("tts").unwrap();
-    // Assuming ref.wav exists in project root (d:\pocket-tts-candle)
-    // We need to resolve it relative to where cargo run executes.
-    // Usually project root.
-    let ref_wav = "../../ref.wav"; // crates/pocket-tts-cli/../../ref.wav -> project root/ref.wav
-
-    // If ref.wav doesn't exist, skip or warn? It should exist based on file listing.
-    if !Path::new(ref_wav).exists() {
-        // Fallback or skip
-        println!("Skipping voice test: ref.wav not found at {}", ref_wav);
-        return;
-    }
-
-    cmd.arg("generate")
-        .arg("--text")
-        .arg("Voice cloning test")
-        .arg("--voice")
-        .arg(ref_wav)
-        .arg("--output")
-        .arg(output_file)
-        .assert()
-        .success();
-
-    assert!(Path::new(output_file).exists());
-    std::fs::remove_file(output_file).unwrap();
+    cmd.args([
+        "generate", "--engine", "irodori", "--text", "こんにちは。", "--voice", "voices/ja/花澤香菜.wav",
+        "--seconds", "2", "--steps", "16", "--output", out,
+    ])
+    .assert()
+    .success();
+    assert!(Path::new(out).exists());
+    let r = hound::WavReader::open(out).unwrap();
+    assert_eq!(r.spec().sample_rate, 48000);
+    std::fs::remove_file(out).unwrap();
 }

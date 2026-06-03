@@ -3,14 +3,18 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "pocket_tts_bindings"
-version = "0.1.1"
-requires-python = ">=3.8"
+name = "maneko"
+version = "0.1.0"
+description = "Native Rust/Candle TTS engines (pocket-tts + Irodori) with Python bindings"
+requires-python = ">=3.9"
 dependencies = [
     "huggingface_hub",
 ]
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
-    "Programming Language :: Python :: Implementation :: PyPy",
 ]
+
+[tool.maturin]
+module-name = "maneko"
+features = ["pyo3/extension-module"]

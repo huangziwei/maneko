@@ -1,64 +1,37 @@
-# Pocket TTS Python Bindings
+# maneko — Python bindings
 
-High-performance Rust bindings for Pocket TTS, powered by [PyO3](https://github.com/PyO3/pyo3) and [Candle](https://github.com/huggingface/candle).
+Native Rust/Candle TTS with no PyTorch/MLX in the runtime, exposed as the `maneko` module
+(PyO3 + [Candle](https://github.com/huggingface/candle)). Two engines:
 
-## Features
+- **`maneko.Pocket`** — pocket-tts: multilingual (en/de/es/fr/it/pt), 24 kHz.
+- **`maneko.Irodori`** — Irodori: Japanese, 48 kHz, with reference-voice cloning.
 
-- **Native Rust Performance**: Run the text-to-speech pipeline entirely in backend Rust code.
-- **Drop-in Generation**: Generate audio from text using the same model checkpoints as the Python version.
-- **No Torch Dependency**: Runs on `candle-core`, removing the need for heavy PyTorch dependencies if only inference is needed.
+## Build
 
-## Installation
-
-You need [Rust](https://www.rust-lang.org/) and [Maturin](https://github.com/PyO3/maturin) installed.
+Needs [Rust](https://www.rust-lang.org/) and [maturin](https://github.com/PyO3/maturin).
 
 ```bash
-# Install maturin
 pip install maturin
-
-# Build and install the bindings
-maturin develop --release
+# from crates/interfaces/python, inside a venv:
+maturin develop --features accelerate     # or --features metal on Apple GPU
 ```
 
-## Usage
+## Use
 
 ```python
-import pocket_tts_bindings
+import maneko
 
-# 1. Load the model
-# Matches the loading of the main pocket-tts-candle crate
-model = pocket_tts_bindings.PyTTSModel.load("b6369a24")
+# pocket-tts (multilingual, 24 kHz)
+p = maneko.Pocket()
+audio = p.generate("Hello world.", language="german", voice="nathan.wav")
+maneko.save_wav("out.wav", audio, p.sample_rate("german"))
 
-# 2. Generate Audio
-# Returns a list of floats (audio samples at 24kHz)
-# You can use a .wav file or a .safetensors file (pre-computed embeddings)
-samples = model.generate(
-    "This is synthesized by Rust.",
-    "path/to/reference_voice.wav"
-)
-
-# Using Predefined Voices (e.g., 'alba')
-# You must download the .safetensors file first
-from huggingface_hub import hf_hub_download
-alba_path = hf_hub_download(
-    repo_id="kyutai/pocket-tts-without-voice-cloning",
-    filename="embeddings/alba.safetensors"
-)
-samples = model.generate(
-    "Hello from Alba!",
-    alba_path
-)
-
-# 3. Save to file (using standard python libs)
-import wave, struct
-
-# Scale float samples to 16-bit integers
-ints = [max(-32768, min(32767, int(s * 32767))) for s in samples]
-
-with wave.open("output.wav", 'w') as f:
-    f.setnchannels(1)
-    f.setsampwidth(2)
-    f.setframerate(24000)
-    f.writeframes(struct.pack('<' + 'h' * len(ints), *ints))
+# Irodori (Japanese, 48 kHz, voice cloning)
+i = maneko.Irodori()
+jp = i.generate("こんにちは。", voice="ref.wav", seconds=4, steps=40)
+maneko.save_wav("jp.wav", jp, i.sample_rate)
 ```
 
+`generate(...)` returns a mono `list[float]`. Weights resolve from `HF_HOME` — point it at the
+cache holding that engine's repos (pocket: the project-local `.cache/huggingface`; Irodori:
+`~/.cache/huggingface`). See `test_bindings.py`.

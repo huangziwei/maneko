@@ -1,127 +1,110 @@
-use pocket::{ModelState, TTSModel};
-use pyo3::prelude::*;
-use std::path::Path;
+//! Python bindings for the maneko TTS engines — importable as `maneko`.
+//!
+//! ```python
+//! import maneko
+//! p = maneko.Pocket()
+//! audio = p.generate("Hello world.", language="b6369a24")        # list[float], 24 kHz
+//! maneko.save_wav("out.wav", audio, p.sample_rate("b6369a24"))
+//!
+//! i = maneko.Irodori()
+//! jp = i.generate("こんにちは。", voice="ref.wav", seconds=4, steps=40)  # 48 kHz
+//! maneko.save_wav("jp.wav", jp, i.sample_rate)
+//! ```
+//!
+//! Weights resolve from `HF_HOME` — point it at the cache holding that engine's repos.
 
-/// Python wrapper for the Rust TTSModel
+use candle_core::{Device, Tensor};
+use pyo3::prelude::*;
+
+fn rt_err<E: std::fmt::Display>(e: E) -> PyErr {
+    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())
+}
+
+fn flatten_audio(t: Tensor) -> PyResult<Vec<f32>> {
+    t.flatten_all().and_then(|t| t.to_vec1::<f32>()).map_err(rt_err)
+}
+
+/// pocket-tts: multilingual (en/de/es/fr/it/pt), 24 kHz. Loads/caches one model per language.
 #[pyclass]
-struct PyTTSModel {
-    inner: TTSModel,
+struct Pocket {
+    engine: pocket::Engine,
 }
 
 #[pymethods]
-impl PyTTSModel {
-    /// Load the model from a specific checkpoint variant
-    #[staticmethod]
-    fn load(variant: &str) -> PyResult<Self> {
-        let model = TTSModel::load(variant)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-        Ok(PyTTSModel { inner: model })
+impl Pocket {
+    #[new]
+    fn new() -> Self {
+        Self { engine: pocket::Engine::new(Device::Cpu) }
     }
 
-    /// Load the model with custom parameters
-    #[staticmethod]
-    fn load_with_params(
-        variant: &str,
-        temp: f32,
-        lsd_decode_steps: usize,
-        eos_threshold: f32,
-    ) -> PyResult<Self> {
-        let model = TTSModel::load_with_params(variant, temp, lsd_decode_steps, eos_threshold)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-        Ok(PyTTSModel { inner: model })
-    }
-
-    /// Generate audio from text
+    /// Generate speech → mono `list[float]` at 24 kHz.
     ///
-    /// Returns:
-    ///     One-dimensional list of floats representing the audio samples.
-    #[pyo3(signature = (text, valid_voice_state=None))]
-    fn generate(&self, text: &str, valid_voice_state: Option<&str>) -> PyResult<Vec<f32>> {
-        // Create a default voice state or load one if provided
-        // Ideally we should expose a VoiceState object to Python too, but for now
-        // let's just make it simple or require a path to a voice prompt file?
-
-        if let Some(path) = valid_voice_state {
-            let state = self.get_voice_state(path)?;
-
-            let audio_tensor = self
-                .inner
-                .generate(text, &state.inner)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-
-            println!(
-                "DEBUG: Output tensor shape before flatten: {:?}",
-                audio_tensor.shape()
-            );
-            let audio_data = audio_tensor
-                .flatten_all()
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?
-                .to_vec1::<f32>()
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-
-            Ok(audio_data)
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Voice state path must be provided for now",
-            ))
-        }
+    /// `language` is a config stem (`english`, `german`, `french_24l`, `b6369a24`, …).
+    /// `voice` is a predefined name / `.wav` / `.safetensors` / `hf://` / base64 (default: stock).
+    #[pyo3(signature = (text, language="b6369a24", voice=None))]
+    fn generate(&mut self, text: &str, language: &str, voice: Option<&str>) -> PyResult<Vec<f32>> {
+        let audio = self.engine.generate(text, language, voice).map_err(rt_err)?;
+        flatten_audio(audio)
     }
 
-    /// Create a voice state from an audio file path
-    /// Create a voice state from an audio file path or safetensors file
-    fn get_voice_state(&self, path: &str) -> PyResult<PyModelState> {
-        let path_obj = Path::new(path);
-        let ext = path_obj
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-
-        let state = if ext == "safetensors" {
-            self.inner
-                .get_voice_state_from_prompt_file(path)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?
-        } else {
-            self.inner
-                .get_voice_state(path)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?
-        };
-
-        Ok(PyModelState { inner: state })
-    }
-
-    /// Generate using the voice state
-    fn generate_audio(&self, text: &str, voice_state: &PyModelState) -> PyResult<Vec<f32>> {
-        let audio_tensor = self
-            .inner
-            .generate(text, &voice_state.inner)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-
-        println!(
-            "DEBUG: Output tensor shape before flatten: {:?}",
-            audio_tensor.shape()
-        );
-        let audio_data = audio_tensor
-            .flatten_all()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?
-            .to_vec1::<f32>()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
-
-        Ok(audio_data)
+    /// Sample rate (Hz) of `language`'s model (loads it if needed).
+    fn sample_rate(&mut self, language: &str) -> PyResult<usize> {
+        self.engine.sample_rate(language).map_err(rt_err)
     }
 }
 
-/// Python wrapper for ModelState
+/// Irodori: Japanese, 48 kHz, flow-matching diffusion with voice cloning.
 #[pyclass]
-#[derive(Clone)]
-struct PyModelState {
-    inner: ModelState,
+struct Irodori {
+    inner: irodori::Irodori,
 }
 
-/// The main module exposed to Python
+#[pymethods]
+impl Irodori {
+    #[new]
+    fn new() -> PyResult<Self> {
+        Ok(Self { inner: irodori::Irodori::from_hf(&Device::Cpu).map_err(rt_err)? })
+    }
+
+    /// Generate Japanese speech → mono `list[float]` at 48 kHz.
+    ///
+    /// `voice` is a reference `.wav` to clone (default: none). `seconds` sets the duration
+    /// (default: model fallback, trimmed to silence). `steps` is the diffusion step count.
+    #[pyo3(signature = (text, voice=None, seconds=None, steps=40))]
+    fn generate(
+        &self,
+        text: &str,
+        voice: Option<&str>,
+        seconds: Option<f64>,
+        steps: usize,
+    ) -> PyResult<Vec<f32>> {
+        let opts = irodori::GenerateOptions {
+            seconds,
+            sampler: irodori::SamplerConfig { num_steps: steps, ..irodori::SamplerConfig::default() },
+        };
+        let audio = self.inner.generate(text, voice, &opts).map_err(rt_err)?;
+        flatten_audio(audio)
+    }
+
+    /// Sample rate (Hz) — always 48000.
+    #[getter]
+    fn sample_rate(&self) -> usize {
+        self.inner.sample_rate()
+    }
+}
+
+/// Save mono float samples to a 16-bit PCM WAV.
+#[pyfunction]
+fn save_wav(path: &str, samples: Vec<f32>, sample_rate: u32) -> PyResult<()> {
+    let n = samples.len();
+    let t = Tensor::from_vec(samples, (1, n), &Device::Cpu).map_err(rt_err)?;
+    tts_core::audio::write_wav(path, &t, sample_rate).map_err(rt_err)
+}
+
 #[pymodule]
-fn pocket_tts_bindings(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<PyTTSModel>()?;
-    m.add_class::<PyModelState>()?;
+fn maneko(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<Pocket>()?;
+    m.add_class::<Irodori>()?;
+    m.add_function(wrap_pyfunction!(save_wav, m)?)?;
     Ok(())
 }

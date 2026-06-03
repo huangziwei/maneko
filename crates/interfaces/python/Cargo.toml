@@ -5,17 +5,23 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Python bindings for Pocket TTS (Rust port)"
+description = "Python bindings for the maneko TTS engines (pocket-tts + Irodori)"
 keywords.workspace = true
 categories.workspace = true
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
-name = "pocket_tts_bindings"
+name = "maneko"
 crate-type = ["cdylib"]
+
+[features]
+default = []
+accelerate = ["pocket/accelerate", "irodori/accelerate", "tts-core/accelerate"]
+metal = ["pocket/metal", "irodori/metal", "tts-core/metal"]
+mkl = ["pocket/mkl", "irodori/mkl", "tts-core/mkl"]
 
 [dependencies]
 pyo3 = { version = "0.27.2", features = ["extension-module"] }
 pocket = { path = "../../models/pocket" }
-anyhow = "1.0"
+irodori = { path = "../../models/irodori" }
+tts-core = { path = "../../core" }
 candle-core.workspace = true
