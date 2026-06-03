@@ -2,8 +2,9 @@ use crate::ModelState;
 use crate::models::seanet::{SEANetDecoder, SEANetEncoder};
 use crate::models::transformer::ProjectedTransformer;
 use crate::modules::conv::{ConvDownsample1d, ConvTrUpsample1d};
+use crate::qweights::Vb;
 use candle_core::{Result, Tensor};
-use candle_nn::{Conv1d, Conv1dConfig, Module, VarBuilder};
+use candle_nn::{Conv1d, Conv1dConfig, Module};
 
 #[derive(Clone)]
 pub struct Quantizer {
@@ -11,7 +12,7 @@ pub struct Quantizer {
 }
 
 impl Quantizer {
-    pub fn new(dimension: usize, output_dimension: usize, vb: VarBuilder) -> Result<Self> {
+    pub fn new(dimension: usize, output_dimension: usize, vb: Vb) -> Result<Self> {
         let config = Conv1dConfig {
             groups: 1,
             padding: 0,
@@ -19,13 +20,9 @@ impl Quantizer {
             dilation: 1,
             ..Default::default()
         };
-        let output_proj = candle_nn::conv1d_no_bias(
-            dimension,
-            output_dimension,
-            1,
-            config,
-            vb.pp("output_proj"),
-        )?;
+        let output_proj = vb
+            .pp("output_proj")
+            .conv1d(dimension, output_dimension, 1, false, config)?;
         Ok(Self { output_proj })
     }
 
@@ -67,7 +64,7 @@ impl MimiModel {
         output_dimension: usize,  // The decoder input dimension (512)
         inner_dim: Option<usize>, // v2: encoder-downsample out-dim (= latent dim, e.g. 32); v1 None -> output_dimension
         name: &str,
-        vb: VarBuilder,
+        vb: Vb,
     ) -> Result<Self> {
         let quantizer = Quantizer::new(dimension, output_dimension, vb.pp("quantizer"))?;
 
@@ -176,7 +173,7 @@ mod tests {
     #[test]
     fn test_mimi_shapes() -> Result<()> {
         let device = Device::Cpu;
-        let vb = VarBuilder::zeros(DType::F32, &device);
+        let vb = crate::qweights::Vb::Full(VarBuilder::zeros(DType::F32, &device));
 
         let encoder = SEANetEncoder::new(
             1,

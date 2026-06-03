@@ -1,8 +1,8 @@
 use crate::ModelState;
 use crate::models::transformer::StreamingTransformer;
 use crate::modules::mlp::{LayerNorm, ModulationParams, SimpleMLPAdaLN};
+use crate::qweights::{QLinear, Vb};
 use candle_core::{Result, Tensor};
-use candle_nn::{Linear, Module, VarBuilder};
 
 pub fn lsd_decode(
     flow_net: &SimpleMLPAdaLN,
@@ -25,9 +25,9 @@ pub fn lsd_decode(
 pub struct FlowLMModel {
     pub flow_net: SimpleMLPAdaLN,
     pub transformer: StreamingTransformer,
-    pub input_linear: Linear,
+    pub input_linear: QLinear,
     pub out_norm: LayerNorm,
-    pub out_eos: Linear,
+    pub out_eos: QLinear,
     pub bos_emb: Tensor,
     pub emb_mean: Tensor,
     pub emb_std: Tensor,
@@ -73,11 +73,11 @@ impl FlowLMModel {
         ldim: usize,
         dim: usize,
         insert_bos_before_voice: bool,
-        vb: VarBuilder,
+        vb: Vb,
     ) -> Result<Self> {
-        let input_linear = candle_nn::linear_no_bias(ldim, dim, vb.pp("input_linear"))?;
+        let input_linear = vb.pp("input_linear").qlinear(ldim, dim, false)?;
         let out_norm = LayerNorm::new(dim, 1e-5, true, vb.pp("out_norm"))?;
-        let out_eos = candle_nn::linear(dim, 1, vb.pp("out_eos"))?;
+        let out_eos = vb.pp("out_eos").qlinear(dim, 1, true)?;
         let bos_emb = vb.get(ldim, "bos_emb")?;
         let emb_mean = vb.get(ldim, "emb_mean")?;
         let emb_std = vb.get(ldim, "emb_std")?;

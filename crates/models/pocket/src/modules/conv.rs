@@ -1,6 +1,7 @@
 use crate::ModelState;
 use candle_core::{DType, Result, Tensor};
-use candle_nn::{Conv1d, Conv1dConfig, ConvTranspose1d, ConvTranspose1dConfig, Module, VarBuilder};
+use crate::qweights::Vb;
+use candle_nn::{Conv1d, Conv1dConfig, ConvTranspose1d, ConvTranspose1dConfig, Module};
 use std::collections::HashMap;
 
 #[derive(Clone)]
@@ -26,7 +27,7 @@ impl StreamingConv1d {
         bias: bool,
         padding_mode: &str,
         name: &str,
-        vb: VarBuilder,
+        vb: Vb,
     ) -> Result<Self> {
         let config = Conv1dConfig {
             stride,
@@ -35,23 +36,9 @@ impl StreamingConv1d {
             groups,
             ..Default::default()
         };
-        let conv = if bias {
-            candle_nn::conv1d(
-                in_channels,
-                out_channels,
-                kernel_size,
-                config,
-                vb.pp("conv"),
-            )?
-        } else {
-            candle_nn::conv1d_no_bias(
-                in_channels,
-                out_channels,
-                kernel_size,
-                config,
-                vb.pp("conv"),
-            )?
-        };
+        let conv = vb
+            .pp("conv")
+            .conv1d(in_channels, out_channels, kernel_size, bias, config)?;
 
         Ok(Self {
             conv,
@@ -163,7 +150,7 @@ impl StreamingConvTranspose1d {
         groups: usize,
         bias: bool,
         name: &str,
-        vb: VarBuilder,
+        vb: Vb,
     ) -> Result<Self> {
         let config = ConvTranspose1dConfig {
             stride,
@@ -172,23 +159,13 @@ impl StreamingConvTranspose1d {
             dilation: 1,
             groups,
         };
-        let convtr = if bias {
-            candle_nn::conv_transpose1d(
-                in_channels,
-                out_channels,
-                kernel_size,
-                config,
-                vb.pp("convtr"),
-            )?
-        } else {
-            candle_nn::conv_transpose1d_no_bias(
-                in_channels,
-                out_channels,
-                kernel_size,
-                config,
-                vb.pp("convtr"),
-            )?
-        };
+        let convtr = vb.pp("convtr").conv_transpose1d(
+            in_channels,
+            out_channels,
+            kernel_size,
+            bias,
+            config,
+        )?;
 
         Ok(Self {
             convtr,
@@ -286,7 +263,7 @@ impl ConvDownsample1d {
         in_dimension: usize,
         out_dimension: usize,
         name: &str,
-        vb: VarBuilder,
+        vb: Vb,
     ) -> Result<Self> {
         let conv = StreamingConv1d::new(
             in_dimension,
@@ -323,7 +300,7 @@ pub struct ConvTrUpsample1d {
 }
 
 impl ConvTrUpsample1d {
-    pub fn new(stride: usize, dimension: usize, name: &str, vb: VarBuilder) -> Result<Self> {
+    pub fn new(stride: usize, dimension: usize, name: &str, vb: Vb) -> Result<Self> {
         let convtr = StreamingConvTranspose1d::new(
             dimension,
             dimension,

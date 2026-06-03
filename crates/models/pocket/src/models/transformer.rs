@@ -3,16 +3,16 @@ use crate::modules::attention::StreamingMultiheadAttention;
 use crate::modules::mlp::{LayerNorm, LayerScale};
 use crate::modules::rope::RotaryEmbedding;
 use crate::voice_state::get_attention_cursor;
+use crate::qweights::{QLinear, Vb};
 use candle_core::{Result, Tensor};
-use candle_nn::{Linear, Module, VarBuilder};
 
 #[derive(Clone)]
 pub struct StreamingTransformerLayer {
     self_attn: StreamingMultiheadAttention,
     norm1: LayerNorm,
     norm2: LayerNorm,
-    linear1: Linear,
-    linear2: Linear,
+    linear1: QLinear,
+    linear2: QLinear,
     layer_scale_1: Option<LayerScale>,
     layer_scale_2: Option<LayerScale>,
 }
@@ -28,7 +28,7 @@ impl StreamingTransformerLayer {
         layer_scale: Option<f32>,
         _attention_kind: &str,
         name: &str,
-        vb: VarBuilder,
+        vb: Vb,
     ) -> Result<Self> {
         let self_attn = StreamingMultiheadAttention::new(
             d_model,
@@ -40,8 +40,8 @@ impl StreamingTransformerLayer {
         )?;
         let norm1 = LayerNorm::new(d_model, 1e-5, true, vb.pp("norm1"))?;
         let norm2 = LayerNorm::new(d_model, 1e-5, true, vb.pp("norm2"))?;
-        let linear1 = candle_nn::linear_no_bias(d_model, dim_feedforward, vb.pp("linear1"))?;
-        let linear2 = candle_nn::linear_no_bias(dim_feedforward, d_model, vb.pp("linear2"))?;
+        let linear1 = vb.pp("linear1").qlinear(d_model, dim_feedforward, false)?;
+        let linear2 = vb.pp("linear2").qlinear(dim_feedforward, d_model, false)?;
 
         let (layer_scale_1, layer_scale_2) = if let Some(init) = layer_scale {
             (
@@ -109,7 +109,7 @@ impl StreamingTransformer {
         max_period: f32,
         kind: &str,
         name: &str,
-        vb: VarBuilder,
+        vb: Vb,
     ) -> Result<Self> {
         let rope = RotaryEmbedding::new(max_period, d_model / num_heads, vb.device())?;
         let mut layers = Vec::new();
@@ -156,8 +156,8 @@ impl StreamingTransformer {
 #[derive(Clone)]
 pub struct ProjectedTransformer {
     transformer: StreamingTransformer,
-    input_proj: Option<Linear>,
-    output_projs: Vec<Option<Linear>>,
+    input_proj: Option<QLinear>,
+    output_projs: Vec<Option<QLinear>>,
     _input_dimension: usize,
     _output_dimensions: Vec<usize>,
     _d_model: usize,
@@ -176,7 +176,7 @@ impl ProjectedTransformer {
         max_period: f32,
         dim_feedforward: usize,
         name: &str,
-        vb: VarBuilder,
+        vb: Vb,
     ) -> Result<Self> {
         let transformer = StreamingTransformer::new(
             d_model,
@@ -192,11 +192,7 @@ impl ProjectedTransformer {
         )?;
 
         let input_proj = if d_model != input_dimension {
-            Some(candle_nn::linear_no_bias(
-                input_dimension,
-                d_model,
-                vb.pp("input_proj"),
-            )?)
+            Some(vb.pp("input_proj").qlinear(input_dimension, d_model, false)?)
         } else {
             None
         };
@@ -206,11 +202,10 @@ impl ProjectedTransformer {
             if d_model == output_dim {
                 output_projs.push(None);
             } else {
-                output_projs.push(Some(candle_nn::linear_no_bias(
-                    d_model,
-                    output_dim,
-                    vb.pp(format!("output_projs.{}", i)),
-                )?));
+                output_projs.push(Some(
+                    vb.pp(format!("output_projs.{}", i))
+                        .qlinear(d_model, output_dim, false)?,
+                ));
             }
         }
 

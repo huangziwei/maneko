@@ -1,5 +1,6 @@
+use crate::qweights::Vb;
 use candle_core::Tensor;
-use candle_nn::{Embedding, Module, VarBuilder};
+use candle_nn::{Embedding, Module};
 
 // Use tokenizers crate for all platforms (no protobuf dependency)
 use tokenizers::Tokenizer;
@@ -21,7 +22,7 @@ impl LUTConditioner {
         tokenizer_path: &Path,
         dim: usize,
         _output_dim: usize,
-        vb: VarBuilder,
+        vb: Vb,
     ) -> Result<Self> {
         // Load SentencePiece model using tokenizers crate
         // The tokenizers crate can load .model files directly via from_file
@@ -45,8 +46,10 @@ impl LUTConditioner {
             );
         }
 
-        // n_bins + 1 for padding
-        let embed = candle_nn::embedding(n_bins + 1, dim, vb.pp("embed"))?;
+        // n_bins + 1 for padding. Built manually (rather than candle_nn::embedding) so it loads
+        // from either weight source; the embedding table is never quantized.
+        let embed_weight = vb.pp("embed").get((n_bins + 1, dim), "weight")?;
+        let embed = Embedding::new(embed_weight, dim);
 
         Ok(Self {
             tokenizer: Arc::new(tokenizer),
@@ -246,7 +249,7 @@ impl LUTConditioner {
         tokenizer_bytes: &[u8],
         dim: usize,
         _output_dim: usize,
-        vb: VarBuilder,
+        vb: Vb,
     ) -> Result<Self> {
         // Try to parse as JSON tokenizer first
         let tokenizer = if let Ok(t) = Tokenizer::from_bytes(tokenizer_bytes) {
@@ -267,8 +270,10 @@ impl LUTConditioner {
             tok
         };
 
-        // n_bins + 1 for padding
-        let embed = candle_nn::embedding(n_bins + 1, dim, vb.pp("embed"))?;
+        // n_bins + 1 for padding. Built manually (rather than candle_nn::embedding) so it loads
+        // from either weight source; the embedding table is never quantized.
+        let embed_weight = vb.pp("embed").get((n_bins + 1, dim), "weight")?;
+        let embed = Embedding::new(embed_weight, dim);
 
         Ok(Self {
             tokenizer: Arc::new(tokenizer),

@@ -1,5 +1,6 @@
+use crate::qweights::{QLinear, Vb};
 use candle_core::{DType, Result, Tensor};
-use candle_nn::{Linear, Module, VarBuilder};
+use candle_nn::Module;
 
 pub type StepFn = Box<dyn Fn(&Tensor) -> Result<Tensor> + Send + Sync>;
 
@@ -10,7 +11,7 @@ pub struct RMSNorm {
 }
 
 impl RMSNorm {
-    pub fn new(dim: usize, eps: f64, vb: VarBuilder) -> Result<Self> {
+    pub fn new(dim: usize, eps: f64, vb: Vb) -> Result<Self> {
         let alpha = vb.get(dim, "alpha")?;
         Ok(Self { alpha, eps })
     }
@@ -32,7 +33,7 @@ pub struct LayerNorm {
 }
 
 impl LayerNorm {
-    pub fn new(dim: usize, eps: f64, affine: bool, vb: VarBuilder) -> Result<Self> {
+    pub fn new(dim: usize, eps: f64, affine: bool, vb: Vb) -> Result<Self> {
         let (weight, bias) = if affine {
             let weight = vb.get(dim, "weight")?;
             let bias = vb.get(dim, "bias")?;
@@ -63,7 +64,7 @@ pub struct LayerScale {
 }
 
 impl LayerScale {
-    pub fn new(channels: usize, _init: f32, vb: VarBuilder) -> Result<Self> {
+    pub fn new(channels: usize, _init: f32, vb: Vb) -> Result<Self> {
         let scale = vb.get(channels, "scale")?;
         Ok(Self { scale })
     }
@@ -75,8 +76,8 @@ impl LayerScale {
 
 #[derive(Clone)]
 pub struct TimestepEmbedder {
-    lin1: Linear,
-    lin2: Linear,
+    lin1: QLinear,
+    lin2: QLinear,
     norm: RMSNorm,
     freqs: Tensor,
 }
@@ -86,10 +87,10 @@ impl TimestepEmbedder {
         hidden_size: usize,
         frequency_embedding_size: usize,
         max_period: f32,
-        vb: VarBuilder,
+        vb: Vb,
     ) -> Result<Self> {
-        let lin1 = candle_nn::linear(frequency_embedding_size, hidden_size, vb.pp("mlp.0"))?;
-        let lin2 = candle_nn::linear(hidden_size, hidden_size, vb.pp("mlp.2"))?;
+        let lin1 = vb.pp("mlp.0").qlinear(frequency_embedding_size, hidden_size, true)?;
+        let lin2 = vb.pp("mlp.2").qlinear(hidden_size, hidden_size, true)?;
         let norm = RMSNorm::new(hidden_size, 1e-5, vb.pp("mlp.3"))?;
 
         let half = frequency_embedding_size / 2;
@@ -146,17 +147,17 @@ pub struct ModulationParams {
 #[derive(Clone)]
 pub struct ResBlock {
     in_ln: LayerNorm,
-    mlp_lin1: Linear,
-    mlp_lin2: Linear,
-    ada_ln_lin: Linear,
+    mlp_lin1: QLinear,
+    mlp_lin2: QLinear,
+    ada_ln_lin: QLinear,
 }
 
 impl ResBlock {
-    pub fn new(channels: usize, vb: VarBuilder) -> Result<Self> {
+    pub fn new(channels: usize, vb: Vb) -> Result<Self> {
         let in_ln = LayerNorm::new(channels, 1e-6, true, vb.pp("in_ln"))?;
-        let mlp_lin1 = candle_nn::linear(channels, channels, vb.pp("mlp.0"))?;
-        let mlp_lin2 = candle_nn::linear(channels, channels, vb.pp("mlp.2"))?;
-        let ada_ln_lin = candle_nn::linear(channels, 3 * channels, vb.pp("adaLN_modulation.1"))?;
+        let mlp_lin1 = vb.pp("mlp.0").qlinear(channels, channels, true)?;
+        let mlp_lin2 = vb.pp("mlp.2").qlinear(channels, channels, true)?;
+        let ada_ln_lin = vb.pp("adaLN_modulation.1").qlinear(channels, 3 * channels, true)?;
         Ok(Self {
             in_ln,
             mlp_lin1,
@@ -182,19 +183,17 @@ impl ResBlock {
 #[derive(Clone)]
 pub struct FinalLayer {
     norm_final: LayerNorm,
-    linear: Linear,
-    ada_ln_lin: Linear,
+    linear: QLinear,
+    ada_ln_lin: QLinear,
 }
 
 impl FinalLayer {
-    pub fn new(model_channels: usize, out_channels: usize, vb: VarBuilder) -> Result<Self> {
+    pub fn new(model_channels: usize, out_channels: usize, vb: Vb) -> Result<Self> {
         let norm_final = LayerNorm::new(model_channels, 1e-6, false, vb.pp("norm_final"))?;
-        let linear = candle_nn::linear(model_channels, out_channels, vb.pp("linear"))?;
-        let ada_ln_lin = candle_nn::linear(
-            model_channels,
-            2 * model_channels,
-            vb.pp("adaLN_modulation.1"),
-        )?;
+        let linear = vb.pp("linear").qlinear(model_channels, out_channels, true)?;
+        let ada_ln_lin = vb
+            .pp("adaLN_modulation.1")
+            .qlinear(model_channels, 2 * model_channels, true)?;
         Ok(Self {
             norm_final,
             linear,
@@ -215,8 +214,8 @@ impl FinalLayer {
 #[derive(Clone)]
 pub struct SimpleMLPAdaLN {
     time_embeds: Vec<TimestepEmbedder>,
-    cond_embed: Linear,
-    input_proj: Linear,
+    cond_embed: QLinear,
+    input_proj: QLinear,
     res_blocks: Vec<ResBlock>,
     final_layer: FinalLayer,
     num_time_conds: usize,
@@ -232,7 +231,7 @@ impl SimpleMLPAdaLN {
         num_res_blocks: usize,
         num_time_conds: usize,
         max_period: f32,
-        vb: VarBuilder,
+        vb: Vb,
     ) -> Result<Self> {
         let mut time_embeds = Vec::new();
         for i in 0..num_time_conds {
@@ -244,8 +243,8 @@ impl SimpleMLPAdaLN {
             )?);
         }
 
-        let cond_embed = candle_nn::linear(cond_channels, model_channels, vb.pp("cond_embed"))?;
-        let input_proj = candle_nn::linear(in_channels, model_channels, vb.pp("input_proj"))?;
+        let cond_embed = vb.pp("cond_embed").qlinear(cond_channels, model_channels, true)?;
+        let input_proj = vb.pp("input_proj").qlinear(in_channels, model_channels, true)?;
 
         let mut res_blocks = Vec::new();
         for i in 0..num_res_blocks {
@@ -399,7 +398,7 @@ mod tests {
             Tensor::ones((4,), DType::F32, &device)?,
         );
         let vb = VarBuilder::from_tensors(map, DType::F32, &device);
-        let norm = RMSNorm::new(4, 1e-5, vb)?;
+        let norm = RMSNorm::new(4, 1e-5, crate::qweights::Vb::Full(vb))?;
 
         // Input: [[1.0, 2.0, 3.0, 4.0]]
         let x = Tensor::new(&[[1.0f32, 2.0, 3.0, 4.0]], &device)?;

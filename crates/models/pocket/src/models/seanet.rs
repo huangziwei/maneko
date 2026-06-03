@@ -1,7 +1,7 @@
 use crate::ModelState;
 use crate::modules::conv::{StreamingConv1d, StreamingConvTranspose1d};
 use candle_core::{Result, Tensor};
-use candle_nn::VarBuilder;
+use crate::qweights::Vb;
 
 #[derive(Clone)]
 pub struct SEANetResnetBlock {
@@ -48,7 +48,7 @@ impl SEANetResnetBlock {
         pad_mode: &str,
         compress: usize,
         name: &str,
-        vb: VarBuilder,
+        vb: Vb,
     ) -> Result<Self> {
         let hidden = dim / compress;
         let mut layers: Vec<Box<dyn StreamingLayer>> = Vec::new();
@@ -160,7 +160,7 @@ impl SEANetEncoder {
         pad_mode: &str,
         compress: usize,
         name: &str,
-        vb: VarBuilder,
+        vb: Vb,
     ) -> Result<Self> {
         let ratios: Vec<usize> = ratios.iter().copied().rev().collect();
         let hop_length = ratios.iter().product();
@@ -319,7 +319,7 @@ impl SEANetDecoder {
         pad_mode: &str,
         compress: usize,
         name: &str,
-        vb: VarBuilder,
+        vb: Vb,
     ) -> Result<Self> {
         let hop_length = ratios.iter().product();
         let mut layers: Vec<Box<dyn StreamingLayerDecoderWrapper>> = Vec::new();

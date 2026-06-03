@@ -11,6 +11,7 @@ use crate::models::mimi::MimiModel;
 use crate::models::seanet::{SEANetDecoder, SEANetEncoder};
 use crate::models::transformer::{ProjectedTransformer, StreamingTransformer};
 use crate::modules::mlp::SimpleMLPAdaLN;
+use crate::qweights::Vb;
 use crate::voice_state::{increment_steps, init_states};
 
 use anyhow::Result;
@@ -112,6 +113,60 @@ impl TTSModel {
         )
     }
 
+    /// Load a model from a pre-quantized GGUF (Q8_0 Linear weights, F32 elsewhere), default params.
+    ///
+    /// `variant` selects the config (dims + tokenizer path); `gguf_path` is the local GGUF produced
+    /// by the `quantize_pocket` example, or one downloaded from HuggingFace.
+    pub fn load_gguf(variant: &str, gguf_path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Self::load_gguf_with_params_device(
+            variant,
+            gguf_path,
+            defaults::TEMPERATURE,
+            defaults::LSD_DECODE_STEPS,
+            defaults::EOS_THRESHOLD,
+            None,
+            &Device::Cpu,
+        )
+    }
+
+    /// Load a quantized GGUF model with custom generation parameters and device.
+    #[allow(clippy::too_many_arguments)]
+    pub fn load_gguf_with_params_device(
+        variant: &str,
+        gguf_path: impl AsRef<std::path::Path>,
+        temp: f32,
+        lsd_decode_steps: usize,
+        eos_threshold: f32,
+        noise_clamp: Option<f32>,
+        device: &Device,
+    ) -> Result<Self> {
+        let config_path = find_config_path(variant)?;
+        let config = load_config(&config_path)?;
+
+        // Weights come from the GGUF; the tokenizer still resolves via the config.
+        let vb = Vb::from_gguf(gguf_path, device)?;
+
+        let tokenizer_path =
+            crate::weights::download_if_necessary(&config.flow_lm.lookup_table.tokenizer_path)?;
+        let conditioner = LUTConditioner::new(
+            config.flow_lm.lookup_table.n_bins,
+            &tokenizer_path,
+            config.flow_lm.lookup_table.dim,
+            config.flow_lm.transformer.d_model,
+            vb.pp("flow_lm.conditioner"),
+        )?;
+
+        Self::from_config_and_vb(
+            config,
+            temp,
+            lsd_decode_steps,
+            eos_threshold,
+            noise_clamp,
+            conditioner,
+            vb,
+        )
+    }
+
     /// Load model with quantized weights for reduced memory footprint
     ///
     /// This applies simulated int8 quantization to applicable layers,
@@ -203,8 +258,10 @@ impl TTSModel {
             .ok_or_else(|| anyhow::anyhow!("weights_path not specified in config"))?;
         let weights_file = crate::weights::download_if_necessary(weights_path)?;
 
-        // Load safetensors with VarBuilder
-        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[weights_file], dtype, device)? };
+        // Load safetensors with VarBuilder (full precision)
+        let vb = Vb::Full(unsafe {
+            VarBuilder::from_mmaped_safetensors(&[weights_file], dtype, device)?
+        });
 
         // Download tokenizer
         let tokenizer_path =
@@ -241,7 +298,7 @@ impl TTSModel {
         let dtype = DType::F32;
 
         let tensors = candle_core::safetensors::load_buffer(weights_bytes, &device)?;
-        let vb = VarBuilder::from_tensors(tensors, dtype, &device);
+        let vb = Vb::Full(VarBuilder::from_tensors(tensors, dtype, &device));
 
         let conditioner = LUTConditioner::new_from_bytes(
             config.flow_lm.lookup_table.n_bins,
@@ -270,7 +327,7 @@ impl TTSModel {
         eos_threshold: f32,
         noise_clamp: Option<f32>,
         conditioner: LUTConditioner,
-        vb: VarBuilder,
+        vb: Vb,
     ) -> Result<Self> {
         let device = vb.device().clone();
 
