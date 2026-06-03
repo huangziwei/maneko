@@ -8,4 +8,7 @@ target/
 voices/
 out/
 
+# Dev scratch examples — kept on disk for local runs, never tracked.
+examples/
+
 *.wav

@@ -157,7 +157,8 @@ pub fn run(args: GenerateArgs) -> Result<()> {
         voice_display.yellow()
     );
 
-    let voice_state = resolve_voice(&model, args.voice.as_deref())?;
+    // Pass the variant so predefined voices resolve to the right per-language embeddings.
+    let voice_state = resolve_voice(&model, args.voice.as_deref(), Some(&args.variant))?;
 
     info!(quiet, "  {} Voice ready", "✓".green());
 

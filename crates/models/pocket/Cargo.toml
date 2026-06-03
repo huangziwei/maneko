@@ -41,6 +41,8 @@ rayon = "1.11.0"
 tracing.workspace = true
 hf-hub.workspace = true
 memmap2.workspace = true
+# Voice specs can be passed as base64-encoded WAV (data URLs); resolution lives in `voice.rs`.
+base64 = "0.21"
 # Intel-only BLAS; only linked when the `mkl` feature is on (keeps Apple Silicon buildable).
 intel-mkl-src = { workspace = true, optional = true }
 

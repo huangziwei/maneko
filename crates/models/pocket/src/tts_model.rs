@@ -35,6 +35,13 @@ pub struct TTSModel {
     /// End-of-sequence threshold
     pub eos_threshold: f32,
     pub noise_clamp: Option<f32>,
+    /// v2 text-preprocess flags (from config; default off / none, i.e. v1 behavior).
+    /// `;`→`,` before tokenizing.
+    pub remove_semicolons: bool,
+    /// Prepend spaces to very short (<5-word) inputs so the model has enough tokens.
+    pub pad_with_spaces_for_short_inputs: bool,
+    /// If set, overrides the word-count heuristic for frames generated after EOS.
+    pub model_recommended_frames_after_eos: Option<usize>,
     /// Optional override for voice-conditioning Mimi chunk size (in frames).
     /// If `None`, an adaptive heuristic is used.
     pub voice_prompt_chunk_frames: Option<usize>,
@@ -394,7 +401,10 @@ impl TTSModel {
 
         // Speaker proj maps the Mimi-encoded voice latent -> d_model. Its input dim is the encoder
         // downsample out-dim: v2 `inner_dim` (e.g. 32), else seanet.dimension (v1 = 512).
-        let speaker_in_dim = config.mimi.inner_dim.unwrap_or(config.mimi.seanet.dimension);
+        let speaker_in_dim = config
+            .mimi
+            .inner_dim
+            .unwrap_or(config.mimi.seanet.dimension);
         let speaker_proj_weight = vb.get((dim, speaker_in_dim), "flow_lm.speaker_proj_weight")?;
 
         Ok(Self {
@@ -406,6 +416,9 @@ impl TTSModel {
             lsd_decode_steps,
             eos_threshold,
             noise_clamp,
+            remove_semicolons: config.remove_semicolons,
+            pad_with_spaces_for_short_inputs: config.pad_with_spaces_for_short_inputs,
+            model_recommended_frames_after_eos: config.model_recommended_frames_after_eos,
             voice_prompt_chunk_frames: None,
             sample_rate: config.mimi.sample_rate,
             dim,
@@ -458,7 +471,7 @@ impl TTSModel {
         let tensors = candle_core::safetensors::load(path, &self.device)?;
         let prompt = tensors
             .get("audio_prompt")
-            .ok_or_else(|| anyhow::anyhow!("'audio_prompt' not found in safetensors file"))?;
+            .ok_or_else(|| audio_prompt_missing_error(&tensors))?;
 
         self.get_voice_state_from_prompt_tensor(prompt)
     }
@@ -468,7 +481,7 @@ impl TTSModel {
         let tensors = candle_core::safetensors::load_buffer(bytes, &self.device)?;
         let prompt = tensors
             .get("audio_prompt")
-            .ok_or_else(|| anyhow::anyhow!("'audio_prompt' not found in safetensors bytes"))?;
+            .ok_or_else(|| audio_prompt_missing_error(&tensors))?;
 
         self.get_voice_state_from_prompt_tensor(prompt)
     }
@@ -599,7 +612,11 @@ impl TTSModel {
     pub fn split_into_best_sentences(&self, text: &str) -> Vec<String> {
         const MAX_TOKENS_PER_CHUNK: usize = 50;
 
-        let prepared_text = prepare_text_prompt(text);
+        let prepared_text = prepare_text_prompt(
+            text,
+            self.pad_with_spaces_for_short_inputs,
+            self.remove_semicolons,
+        );
 
         // 1. Initial split by punctuation to respect sentence boundaries
         let raw_sentences: Vec<&str> = prepared_text
@@ -936,7 +953,11 @@ impl TTSModel {
         let mut mimi_state = init_states(1, 1000);
 
         // Prepare text
-        let prepared_text = prepare_text_prompt(&text);
+        let prepared_text = prepare_text_prompt(
+            &text,
+            self.pad_with_spaces_for_short_inputs,
+            self.remove_semicolons,
+        );
 
         // Error handling for preparation failures inside the iterator
         let tokens = match self.conditioner.prepare(&prepared_text, &self.device) {
@@ -961,7 +982,10 @@ impl TTSModel {
         // Removed redundant increment_steps("offset") - handled internally by RoPE/Attention with current_end_len
 
         let max_gen_len = (prepared_text.split_whitespace().count() + 2) * 13;
-        let frames_after_eos = estimate_frames_after_eos(&text);
+        // Config may pin this; otherwise fall back to the word-count heuristic.
+        let frames_after_eos = self
+            .model_recommended_frames_after_eos
+            .unwrap_or_else(|| estimate_frames_after_eos(&text));
 
         let mut backbone_input = match self.flow_lm.bos_emb.clone().reshape((1, 1, self.ldim)) {
             Ok(t) => t,
@@ -1121,7 +1145,11 @@ impl TTSModel {
         })
     }
     pub fn estimate_generation_steps(&self, text: &str) -> usize {
-        let prepared = prepare_text_prompt(text);
+        let prepared = prepare_text_prompt(
+            text,
+            self.pad_with_spaces_for_short_inputs,
+            self.remove_semicolons,
+        );
         (prepared.split_whitespace().count() + 2) * 13
     }
 }
@@ -1186,8 +1214,13 @@ fn find_config_path(variant: &str) -> Result<std::path::PathBuf> {
 }
 
 /// Prepare text for generation, stripping pause markers for TTS processing
-fn prepare_text_prompt(text: &str) -> String {
-    // First strip any explicit pause markers
+/// Normalize a text chunk for the model, mirroring v2 `prepare_text_prompt`.
+///
+/// `pad_with_spaces` and `remove_semicolons` come from the model config (v2 flags; both off =
+/// v1 behavior). Padding is applied only when `pad_with_spaces` is set *and* the input is short
+/// (<5 words) — v1/most configs leave it off.
+fn prepare_text_prompt(text: &str, pad_with_spaces: bool, remove_semicolons: bool) -> String {
+    // First strip any explicit pause markers (maneko extension).
     let text = crate::pause::strip_pause_markers(text);
 
     let mut text = text.trim().to_string();
@@ -1196,6 +1229,10 @@ fn prepare_text_prompt(text: &str) -> String {
     }
 
     text = text.replace(['\n', '\r'], " ").replace("  ", " ");
+
+    if remove_semicolons {
+        text = text.replace(';', ",");
+    }
 
     let word_count = text.split_whitespace().count();
 
@@ -1213,8 +1250,8 @@ fn prepare_text_prompt(text: &str) -> String {
         text.push('.');
     }
 
-    // Python logic: prepend spaces if too short
-    if word_count < 5 {
+    // Prepend spaces if too short — only when the config opts in.
+    if pad_with_spaces && word_count < 5 {
         text = format!("{}{}", " ".repeat(8), text);
     }
 
@@ -1231,21 +1268,64 @@ pub fn estimate_frames_after_eos(text: &str) -> usize {
     }
 }
 
+/// Build a helpful error when a voice safetensors lacks an `audio_prompt` tensor.
+///
+/// Predefined voices ship as a precomputed **model_state** (a KV cache: `…/cache` + `…/offset`),
+/// which this engine can't yet import — its attention uses a different (circular) KV layout than
+/// the saved (linear) one. Point the user at the working clone path.
+fn audio_prompt_missing_error(
+    tensors: &std::collections::HashMap<String, Tensor>,
+) -> anyhow::Error {
+    let looks_like_model_state = tensors
+        .keys()
+        .any(|k| k.contains("/cache") || k.contains("/offset") || k.contains("self_attn"));
+    if looks_like_model_state {
+        anyhow::anyhow!(
+            "this voice file is a precomputed model_state (KV cache), not an 'audio_prompt' latent. \
+             Importing precomputed model_state voices isn't supported yet; clone a voice from a .wav instead."
+        )
+    } else {
+        let mut keys: Vec<&String> = tensors.keys().collect();
+        keys.sort();
+        anyhow::anyhow!(
+            "'audio_prompt' not found in voice safetensors (keys: {:?})",
+            keys.into_iter().take(6).collect::<Vec<_>>()
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_prepare_text_prompt() {
-        // Short texts (<5 words) get 8 spaces prepended
-        assert_eq!(prepare_text_prompt("hello world"), "        Hello world.");
-        assert_eq!(prepare_text_prompt("Hello world."), "        Hello world.");
-        assert_eq!(prepare_text_prompt("  hello  "), "        Hello.");
-        // Long texts don't get spaces
+        // pad_with_spaces gates the 8-space prefix for short (<5-word) inputs.
         assert_eq!(
-            prepare_text_prompt("one two three four five"),
+            prepare_text_prompt("hello world", true, false),
+            "        Hello world."
+        );
+        assert_eq!(
+            prepare_text_prompt("Hello world.", true, false),
+            "        Hello world."
+        );
+        assert_eq!(
+            prepare_text_prompt("  hello  ", true, false),
+            "        Hello."
+        );
+        // Flag off: no padding, even for short inputs.
+        assert_eq!(
+            prepare_text_prompt("hello world", false, false),
+            "Hello world."
+        );
+        // >=5 words: never padded, regardless of the flag.
+        assert_eq!(
+            prepare_text_prompt("one two three four five", true, false),
             "One two three four five."
         );
+        // remove_semicolons: ';' -> ',' before tokenizing.
+        assert_eq!(prepare_text_prompt("a; b; c", false, true), "A, b, c.");
+        assert_eq!(prepare_text_prompt("a; b; c", false, false), "A; b; c.");
     }
 
     #[test]
@@ -1260,7 +1340,7 @@ mod tests {
     #[test]
     fn test_prepare_text_prompt_strips_pause_markers() {
         // Pause markers should be stripped from text
-        let result = prepare_text_prompt("Hello [pause:500ms] world");
+        let result = prepare_text_prompt("Hello [pause:500ms] world", false, false);
         // The pause marker should be gone, replaced with space
         assert!(!result.contains("[pause:"));
         assert!(result.contains("Hello"));
@@ -1269,7 +1349,7 @@ mod tests {
 
     #[test]
     fn test_prepare_text_prompt_handles_multiple_pauses() {
-        let result = prepare_text_prompt("One [pause:100ms] two [pause:1s] three");
+        let result = prepare_text_prompt("One [pause:100ms] two [pause:1s] three", false, false);
         assert!(!result.contains("[pause:"));
         assert!(result.contains("One"));
         assert!(result.contains("two"));
