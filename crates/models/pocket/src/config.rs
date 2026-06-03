@@ -36,6 +36,9 @@ pub struct FlowLMConfig {
     pub flow: FlowConfig,
     pub transformer: FlowLMTransformerConfig,
     pub lookup_table: LookupTableConfig,
+    /// v2: prepend a learnable BOS token (d_model space) before voice conditioning. Default off (v1).
+    #[serde(default)]
+    pub insert_bos_before_voice: bool,
     #[serde(default)]
     pub weights_path: Option<String>,
 }
@@ -87,6 +90,12 @@ pub struct QuantizerConfig {
 pub struct MimiConfig {
     pub dtype: String,
     pub sample_rate: usize,
+    /// v2: latent dim out of the encoder downsample (e.g. 32). v1 absent → falls back to seanet.dimension.
+    #[serde(default)]
+    pub inner_dim: Option<usize>,
+    /// v2: dim into the decoder upsample (e.g. 512). v1 absent → falls back to seanet.dimension.
+    #[serde(default)]
+    pub outer_dim: Option<usize>,
     pub channels: usize,
     pub frame_rate: f64,
     pub seanet: SEANetConfig,
@@ -105,6 +114,13 @@ pub struct Config {
     pub weights_path: Option<String>,
     #[serde(default)]
     pub weights_path_without_voice_cloning: Option<String>,
+    /// v2 text-preprocess flags (top-level in the YAML). All default off / none for v1.
+    #[serde(default)]
+    pub remove_semicolons: bool,
+    #[serde(default)]
+    pub pad_with_spaces_for_short_inputs: bool,
+    #[serde(default)]
+    pub model_recommended_frames_after_eos: Option<usize>,
 }
 
 /// Load configuration from a YAML file

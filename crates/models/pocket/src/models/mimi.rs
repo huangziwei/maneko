@@ -63,8 +63,9 @@ impl MimiModel {
         encoder_frame_rate: f64,
         sample_rate: usize,
         channels: usize,
-        dimension: usize,        // The quantizer input dimension (32)
-        output_dimension: usize, // The decoder input dimension (512)
+        dimension: usize,         // The quantizer input dimension (32)
+        output_dimension: usize,  // The decoder input dimension (512)
+        inner_dim: Option<usize>, // v2: encoder-downsample out-dim (= latent dim, e.g. 32); v1 None -> output_dimension
         name: &str,
         vb: VarBuilder,
     ) -> Result<Self> {
@@ -72,10 +73,15 @@ impl MimiModel {
 
         let (downsample, upsample) = if encoder_frame_rate != frame_rate {
             let stride = (encoder_frame_rate / frame_rate) as usize;
+            // v2 downsamples the encoder output (output_dimension) down to inner_dim (the FlowLM latent
+            // dim); v1 keeps it at output_dimension. The upsample stays at output_dimension (outer_dim ==
+            // output_dimension in every known config), so the decode-side projection is unchanged.
+            let downsample_out = inner_dim.unwrap_or(output_dimension);
             (
                 Some(ConvDownsample1d::new(
                     stride,
                     output_dimension,
+                    downsample_out,
                     &format!("{}.downsample", name),
                     vb.pp("downsample"),
                 )?),
@@ -241,6 +247,7 @@ mod tests {
             1,
             128,
             512,
+            None,
             "mimi",
             vb.pp("mimi"),
         )?;

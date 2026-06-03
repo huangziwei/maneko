@@ -298,7 +298,14 @@ impl TTSModel {
             vb.pp("flow_lm.transformer"),
         )?;
 
-        let mut flow_lm = FlowLMModel::new(flow_net, transformer, ldim, dim, vb.pp("flow_lm"))?;
+        let mut flow_lm = FlowLMModel::new(
+            flow_net,
+            transformer,
+            ldim,
+            dim,
+            config.flow_lm.insert_bos_before_voice,
+            vb.pp("flow_lm"),
+        )?;
         flow_lm.noise_clamp = noise_clamp;
 
         // Build Mimi components
@@ -380,13 +387,15 @@ impl TTSModel {
             config.mimi.channels,
             config.mimi.quantizer.dimension,
             config.mimi.quantizer.output_dimension,
+            config.mimi.inner_dim,
             "mimi",
             vb.pp("mimi"),
         )?;
 
-        // Load speaker projection weight - uses mimi output dimension, not internal ldim
-        let mimi_out_dim = config.mimi.quantizer.output_dimension;
-        let speaker_proj_weight = vb.get((dim, mimi_out_dim), "flow_lm.speaker_proj_weight")?;
+        // Speaker proj maps the Mimi-encoded voice latent -> d_model. Its input dim is the encoder
+        // downsample out-dim: v2 `inner_dim` (e.g. 32), else seanet.dimension (v1 = 512).
+        let speaker_in_dim = config.mimi.inner_dim.unwrap_or(config.mimi.seanet.dimension);
+        let speaker_proj_weight = vb.get((dim, speaker_in_dim), "flow_lm.speaker_proj_weight")?;
 
         Ok(Self {
             flow_lm,
@@ -529,6 +538,14 @@ impl TTSModel {
         let latents_2d = latents.reshape((b * t, d))?;
         let conditioning_2d = latents_2d.matmul(&self.speaker_proj_weight.t()?)?;
         let conditioning = conditioning_2d.reshape((b, t, self.dim))?;
+
+        // v2 (insert_bos_before_voice): prepend the learnable BOS-before-voice token to the speaker
+        // conditioning before priming the FlowLM. Matches the reference
+        // (tts_model.py: prompt = cat([bos_before_voice, prompt], dim=1)). v1 has no such token.
+        let conditioning = match &self.flow_lm.bos_before_voice {
+            Some(bos) => Tensor::cat(&[bos, &conditioning], 1)?,
+            None => conditioning,
+        };
 
         // Run flow_lm with audio conditioning to update state
         let mut flow_state = init_states(1, 1000);

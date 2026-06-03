@@ -34,6 +34,8 @@ pub struct FlowLMModel {
     pub ldim: usize,
     pub dim: usize,
     pub noise_clamp: Option<f32>,
+    /// v2 only: learnable `[1, 1, dim]` token prepended before the voice conditioning. None for v1.
+    pub bos_before_voice: Option<Tensor>,
 }
 
 fn sample_noise(
@@ -70,6 +72,7 @@ impl FlowLMModel {
         transformer: StreamingTransformer,
         ldim: usize,
         dim: usize,
+        insert_bos_before_voice: bool,
         vb: VarBuilder,
     ) -> Result<Self> {
         let input_linear = candle_nn::linear_no_bias(ldim, dim, vb.pp("input_linear"))?;
@@ -78,6 +81,12 @@ impl FlowLMModel {
         let bos_emb = vb.get(ldim, "bos_emb")?;
         let emb_mean = vb.get(ldim, "emb_mean")?;
         let emb_std = vb.get(ldim, "emb_std")?;
+        // v2: learnable token prepended before the voice conditioning (shape [1, 1, dim]).
+        let bos_before_voice = if insert_bos_before_voice {
+            Some(vb.get((1, 1, dim), "bos_before_voice")?)
+        } else {
+            None
+        };
 
         Ok(Self {
             flow_net,
@@ -91,6 +100,7 @@ impl FlowLMModel {
             ldim,
             dim,
             noise_clamp: None, // Default to no clamp
+            bos_before_voice,
         })
     }
 

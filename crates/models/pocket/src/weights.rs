@@ -5,6 +5,22 @@ use candle_core::Device;
 use hf_hub::api::sync::ApiBuilder;
 use hf_hub::{Repo, RepoType};
 
+/// Resolve the HuggingFace hub cache root the way hf-hub does:
+/// `HF_HOME/hub`, else `HF_HUB_CACHE`, else `~/.cache/huggingface/hub`.
+fn hf_cache_root() -> PathBuf {
+    if let Ok(h) = std::env::var("HF_HOME") {
+        return PathBuf::from(h).join("hub");
+    }
+    if let Ok(c) = std::env::var("HF_HUB_CACHE") {
+        return PathBuf::from(c);
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(home)
+        .join(".cache")
+        .join("huggingface")
+        .join("hub")
+}
+
 /// Download a file from HuggingFace Hub if necessary.
 ///
 /// Supports the format: `hf://owner/repo/filename@revision`
@@ -29,6 +45,20 @@ pub fn download_if_necessary(file_path: &str) -> Result<PathBuf> {
         } else {
             (filename_with_revision, None)
         };
+
+        // Fast path: if the pinned revision is already materialized in the local HF cache, use its
+        // snapshot directly. Avoids needing a `refs/<commit>` indirection file, and works with
+        // read-only / shared caches (e.g. another project's HF_HOME).
+        if let Some(rev) = revision.as_deref() {
+            let snapshot = hf_cache_root()
+                .join(format!("models--{}--{}", parts[0], parts[1]))
+                .join("snapshots")
+                .join(rev)
+                .join(&filename);
+            if snapshot.exists() {
+                return Ok(snapshot);
+            }
+        }
 
         // Use ApiBuilder::from_env so HF_HOME / HF_ENDPOINT are honored.
         // (ApiBuilder::new ignores HF_HOME and hardcodes ~/.cache/huggingface.)
