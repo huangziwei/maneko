@@ -11,5 +11,8 @@ dist/
 
 # Dev scratch examples — kept on disk for local runs, never tracked.
 examples/
+# One-off dev tools (q8 converter, whisper-WER, gen) live here as standalone
+# path-dep crates — usable but never part of the tracked codebase / workspace.
+artifacts/
 
 *.wav
