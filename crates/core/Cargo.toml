@@ -1,0 +1,13 @@
+[package]
+name = "tts-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared primitives for maneko's TTS engines (ops, conv, attention, audio, weights, device)."
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+crate-type = ["rlib"]

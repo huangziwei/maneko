@@ -1,0 +1,38 @@
+[package]
+name = "tts-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLI for the maneko TTS engines"
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+name = "tts_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tts"
+path = "src/main.rs"
+
+[features]
+default = []
+quantized = ["pocket/quantized"]
+metal = ["pocket/metal"]
+mkl = ["pocket/mkl"]
+accelerate = ["pocket/accelerate"]
+
+[dependencies]
+pocket = { path = "../../models/pocket" }
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+indicatif = "0.17"
+owo-colors = "4"
+candle-core.workspace = true
+base64 = "0.21"
+
+[dev-dependencies]
+assert_cmd = "2.0"
+hound = "3.5"

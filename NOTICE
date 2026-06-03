@@ -1,0 +1,32 @@
+maneko is licensed under AGPL-3.0-or-later (see LICENSE). It incorporates and ports
+the MIT-licensed work below; those MIT copyright and permission notices are retained
+as MIT requires. AGPLv3 is compatible with MIT and Apache-2.0 (permissive -> copyleft).
+Model weights are separate artifacts governed by their own terms (listed below), not
+by maneko's code license.
+
+Their notices follow.
+
+1. pocket-tts — Rust/Candle port (the seed for crates/pocket-tts{,-cli,-bindings})
+   © Pocket TTS Contributors (babybirdprd). MIT.
+   https://github.com/babybirdprd/pocket-tts
+   Upstream copy vendored at ref/pocket-tts-rs (rev dbf78c8).
+
+2. pocket-tts — model and Python reference. Kyutai.
+   Weights: https://huggingface.co/kyutai/pocket-tts
+            https://huggingface.co/kyutai/pocket-tts-without-voice-cloning
+   Python package v2.0.0 vendored at ref/pocket-tts-v2 (reference for multilingual v2).
+   Use of the model is subject to Kyutai's model-use terms — notably, no voice
+   cloning without explicit and lawful consent, and no deceptive/unlawful use.
+
+3. mlx-audio — Irodori-TTS and DACVAE implementation reference.
+   © 2024 Prince Canuma. MIT.
+   https://github.com/Blaizzy/mlx-audio
+   Upstream copy vendored at ref/mlx-audio (rev 1ded4f4).
+
+4. Models used by the Irodori engine. Aratako and llm-jp.
+   https://huggingface.co/Aratako/Irodori-TTS-500M-v2
+   https://huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim
+   https://huggingface.co/llm-jp/llm-jp-3-150m
+
+5. Candle — © Hugging Face. MIT / Apache-2.0.
+   https://github.com/huggingface/candle

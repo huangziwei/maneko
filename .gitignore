@@ -1,0 +1,9 @@
+.cache
+.claude
+
+ref/
+/assets/
+target/
+voices/
+
+*.wav

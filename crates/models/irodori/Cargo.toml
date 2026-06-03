@@ -1,0 +1,13 @@
+[package]
+name = "irodori"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Irodori — Japanese TTS engine (DiT + DAC-VAE) for maneko. Port in progress."
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+crate-type = ["rlib"]
