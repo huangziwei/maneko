@@ -12,7 +12,10 @@ use crate::models::seanet::{SEANetDecoder, SEANetEncoder};
 use crate::models::transformer::{ProjectedTransformer, StreamingTransformer};
 use crate::modules::mlp::SimpleMLPAdaLN;
 use crate::qweights::Vb;
-use crate::voice_state::{increment_steps, init_states};
+use crate::voice_state::{
+    ATTN_K_BUF_KEY, ATTN_V_BUF_KEY, AttentionCursor, increment_steps, init_states,
+    write_attention_cursor,
+};
 
 use anyhow::Result;
 use candle_core::{DType, Device, Tensor};
@@ -520,27 +523,115 @@ impl TTSModel {
         self.get_voice_state_from_tensor(&audio)
     }
 
-    /// Create voice state from a pre-calculated latent prompt file (.safetensors)
+    /// Build a [`ModelState`] from a loaded voice safetensors, dispatching on its format: an
+    /// `audio_prompt` latent (clone / prompt voices) or a precomputed FlowLM `model_state` KV-cache
+    /// (the pocket-tts v2 per-language built-in voices).
+    fn voice_state_from_tensors(
+        &self,
+        tensors: &std::collections::HashMap<String, Tensor>,
+    ) -> Result<ModelState> {
+        if let Some(prompt) = tensors.get("audio_prompt") {
+            return self.get_voice_state_from_prompt_tensor(prompt);
+        }
+        if tensors.keys().any(|k| k.ends_with(".self_attn/cache")) {
+            return self.get_voice_state_from_model_state(tensors);
+        }
+        Err(audio_prompt_missing_error(tensors))
+    }
+
+    /// Create voice state from a pre-calculated latent prompt / model_state file (.safetensors).
     pub fn get_voice_state_from_prompt_file<P: AsRef<std::path::Path>>(
         &self,
         path: P,
     ) -> Result<ModelState> {
         let tensors = candle_core::safetensors::load(path, &self.device)?;
-        let prompt = tensors
-            .get("audio_prompt")
-            .ok_or_else(|| audio_prompt_missing_error(&tensors))?;
-
-        self.get_voice_state_from_prompt_tensor(prompt)
+        self.voice_state_from_tensors(&tensors)
     }
 
-    /// Create voice state from pre-calculated latent prompt bytes (.safetensors)
+    /// Create voice state from pre-calculated latent prompt / model_state bytes (.safetensors).
     pub fn get_voice_state_from_prompt_bytes(&self, bytes: &[u8]) -> Result<ModelState> {
         let tensors = candle_core::safetensors::load_buffer(bytes, &self.device)?;
-        let prompt = tensors
-            .get("audio_prompt")
-            .ok_or_else(|| audio_prompt_missing_error(&tensors))?;
+        self.voice_state_from_tensors(&tensors)
+    }
 
-        self.get_voice_state_from_prompt_tensor(prompt)
+    /// Import a precomputed FlowLM `model_state` (the pocket-tts v2 per-language built-in voices)
+    /// into a [`ModelState`].
+    ///
+    /// Each layer ships `transformer.layers.{i}.self_attn/cache` `[2, B, seq, H, D]` (k/v stacked)
+    /// plus an `offset`. The Rust FlowLM attention keeps a chronological ring buffer
+    /// `[B, H, cap, D]` per layer + a cursor, so importing is: split k/v, transpose seq↔heads into
+    /// the buffers, remap the module key (`transformer.*` → `flow_lm.transformer.*`), and seed the
+    /// cursor at `offset`. FlowLM attention is non-windowed (linear), so `head = 0` and the buffer
+    /// grows from `seq` on the first generated step.
+    fn get_voice_state_from_model_state(
+        &self,
+        tensors: &std::collections::HashMap<String, Tensor>,
+    ) -> Result<ModelState> {
+        let mut layers: Vec<usize> = tensors
+            .keys()
+            .filter_map(|k| {
+                k.strip_prefix("transformer.layers.")?
+                    .strip_suffix(".self_attn/cache")?
+                    .parse::<usize>()
+                    .ok()
+            })
+            .collect();
+        layers.sort_unstable();
+        if layers.is_empty() {
+            anyhow::bail!("model_state voice: no `transformer.layers.*.self_attn/cache` tensors");
+        }
+
+        let mut state = init_states(1, 1000);
+        for i in &layers {
+            let cache = tensors
+                .get(&format!("transformer.layers.{i}.self_attn/cache"))
+                .ok_or_else(|| anyhow::anyhow!("missing cache for layer {i}"))?;
+            let dims = cache.dims();
+            anyhow::ensure!(
+                dims.len() == 5 && dims[0] == 2,
+                "layer {i}: unexpected cache shape {dims:?} (want [2, B, seq, H, D])"
+            );
+            let seq = dims[2];
+
+            // [2,B,seq,H,D] -> k,v each [B,seq,H,D] -> [B,H,seq,D] to match the ring buffer layout.
+            let split = |idx: usize| -> Result<Tensor> {
+                Ok(cache
+                    .narrow(0, idx, 1)?
+                    .squeeze(0)?
+                    .transpose(1, 2)?
+                    .contiguous()?
+                    .to_dtype(DType::F32)?)
+            };
+            let k_buf = split(0)?;
+            let v_buf = split(1)?;
+
+            // Absolute position to resume RoPE / writes from; defaults to seq if no explicit offset.
+            let offset = tensors
+                .get(&format!("transformer.layers.{i}.self_attn/offset"))
+                .and_then(|t| t.flatten_all().ok())
+                .and_then(|t| t.to_dtype(DType::I64).ok())
+                .and_then(|t| t.to_vec1::<i64>().ok())
+                .and_then(|v| v.first().copied())
+                .map(|x| x.max(0) as usize)
+                .unwrap_or(seq);
+
+            let module = format!("flow_lm.transformer.layers.{i}.self_attn");
+            let entry = state.entry(module).or_default();
+            entry.insert(ATTN_K_BUF_KEY.to_string(), k_buf);
+            entry.insert(ATTN_V_BUF_KEY.to_string(), v_buf);
+            write_attention_cursor(
+                entry,
+                AttentionCursor {
+                    pos: offset,
+                    len: seq,
+                    head: 0,
+                },
+                &self.device,
+            )?;
+        }
+
+        tracing::debug!("imported model_state voice: {} flow_lm layers", layers.len());
+        Ok(state)
     }
 
     /// Create voice state from a pre-calculated latent prompt tensor
@@ -1338,8 +1429,8 @@ fn audio_prompt_missing_error(
         .any(|k| k.contains("/cache") || k.contains("/offset") || k.contains("self_attn"));
     if looks_like_model_state {
         anyhow::anyhow!(
-            "this voice file is a precomputed model_state (KV cache), not an 'audio_prompt' latent. \
-             Importing precomputed model_state voices isn't supported yet; clone a voice from a .wav instead."
+            "voice file looks like a precomputed model_state but has no \
+             `transformer.layers.*.self_attn/cache` tensors to import; clone from a .wav instead."
         )
     } else {
         let mut keys: Vec<&String> = tensors.keys().collect();
