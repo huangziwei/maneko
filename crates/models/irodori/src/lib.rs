@@ -8,17 +8,20 @@
 //! - **M1 DACVAE decode** — [`dacvae`] (32-dim VAE latent → waveform). ✅
 //! - **M2 encoders** — [`encoders`] (text + reference-latent/speaker states). ✅
 //! - **M3 DiT step** — [`dit`] (JointAttention + dual LowRankAdaLN → velocity). ✅
-//! - M4 RF/CFG sampler, M5 JP frontend + E2E — pending.
+//! - **M4 RF/CFG sampler** — [`sampler`] (Euler + independent CFG → latent). ✅
+//! - M5 JP frontend + E2E — pending.
 
 pub mod blocks;
 pub mod config;
 pub mod dacvae;
 pub mod dit;
 pub mod encoders;
+pub mod sampler;
 pub mod weights;
 
 pub use config::{DacvaeConfig, DitConfig};
 pub use dacvae::Dacvae;
 pub use dit::IrodoriDiT;
 pub use encoders::Encoders;
+pub use sampler::{sample_euler_cfg, SamplerConfig};
 pub use weights::Weights;

@@ -240,6 +240,26 @@ pub struct KvCaches {
     context: Vec<Kv>,
 }
 
+impl KvCaches {
+    /// Tile every cached K/V `n` times along the batch axis (for an `n`-way CFG batch, where each
+    /// sub-batch reuses the same conditional KV and differs only in its attention mask).
+    pub fn replicate_batch(&self, n: usize) -> Result<KvCaches> {
+        let rep = |kvs: &[Kv]| -> Result<Vec<Kv>> {
+            kvs.iter()
+                .map(|(k, v)| {
+                    let ks: Vec<Tensor> = (0..n).map(|_| k.clone()).collect();
+                    let vs: Vec<Tensor> = (0..n).map(|_| v.clone()).collect();
+                    Ok((Tensor::cat(&ks, 0)?, Tensor::cat(&vs, 0)?))
+                })
+                .collect()
+        };
+        Ok(KvCaches {
+            text: rep(&self.text)?,
+            context: rep(&self.context)?,
+        })
+    }
+}
+
 /// The Irodori DiT: encoders + timestep conditioning + N DiffusionBlocks → velocity prediction.
 pub struct IrodoriDiT {
     encoders: Encoders,
