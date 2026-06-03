@@ -6,12 +6,16 @@
 //!
 //! Status by milestone:
 //! - **M1 DACVAE decode** — [`dacvae`] (32-dim VAE latent → waveform). ✅
-//! - M2 encoders, M3 DiT step, M4 RF/CFG sampler, M5 JP frontend + E2E — pending.
+//! - **M2 encoders** — [`encoders`] (text + reference-latent/speaker states). ✅
+//! - M3 DiT step, M4 RF/CFG sampler, M5 JP frontend + E2E — pending.
 
+pub mod blocks;
 pub mod config;
 pub mod dacvae;
+pub mod encoders;
 pub mod weights;
 
-pub use config::DacvaeConfig;
+pub use config::{DacvaeConfig, DitConfig};
 pub use dacvae::Dacvae;
+pub use encoders::Encoders;
 pub use weights::Weights;
