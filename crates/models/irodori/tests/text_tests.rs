@@ -1,8 +1,8 @@
 //! M5 validation: JP frontend (normalize + tokenize) parity vs transformers + text.py golden.
 //!
 //!   source .cache/mlxgolden/bin/activate
-//!   HF_HOME=$HOME/.cache/huggingface python ref/tools/dump_golden_text.py
-//!   HF_HOME=$HOME/.cache/huggingface cargo test -p irodori --features accelerate \
+//!   HF_HOME=$PWD/.cache/huggingface python ref/tools/dump_golden_text.py
+//!   HF_HOME=$PWD/.cache/huggingface cargo test -p irodori --features accelerate \
 //!     text_ids -- --ignored --nocapture
 
 use candle_core::Device;

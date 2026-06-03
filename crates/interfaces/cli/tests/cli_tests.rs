@@ -26,7 +26,7 @@ fn cli_generate_pocket() {
 }
 
 #[test]
-#[ignore = "needs Irodori weights + HF_HOME=$HOME/.cache/huggingface"]
+#[ignore = "needs Irodori weights + HF_HOME=$PWD/.cache/huggingface"]
 fn cli_generate_irodori() {
     let out = "test_cli_irodori.wav";
     let _ = std::fs::remove_file(out);

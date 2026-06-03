@@ -1,9 +1,9 @@
 //! M2 validation: text + speaker encoder parity vs an MLX-CPU golden.
 //!
 //!   source .cache/mlxgolden/bin/activate
-//!   HF_HOME=$HOME/.cache/huggingface SDKROOT=$(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX*.sdk|tail -1) \
+//!   HF_HOME=$PWD/.cache/huggingface SDKROOT=$(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX*.sdk|tail -1) \
 //!     DEVELOPER_DIR=/Library/Developer/CommandLineTools python ref/tools/dump_golden_encoders.py
-//!   HF_HOME=$HOME/.cache/huggingface cargo test -p irodori --features accelerate \
+//!   HF_HOME=$PWD/.cache/huggingface cargo test -p irodori --features accelerate \
 //!     encoders -- --ignored --nocapture
 
 use candle_core::{DType, Device, Result, Tensor};

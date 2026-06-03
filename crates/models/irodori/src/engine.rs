@@ -13,7 +13,8 @@ use crate::{Dacvae, IrodoriDiT, IrodoriTokenizer};
 use candle_core::{DType, Device, Result, Tensor};
 use candle_nn::VarBuilder;
 
-const DIT_REPO: &str = "Aratako/Irodori-TTS-500M-v2";
+const DIT_REPO_V2: &str = "Aratako/Irodori-TTS-500M-v2";
+const DIT_REPO_V3: &str = "Aratako/Irodori-TTS-500M-v3";
 
 /// Detect trailing silence in a generated latent `(T, D)`: the first window (size 20) whose values
 /// have `std < 0.05` and `|mean| < 0.1`, else `T`. Verbatim port of `_find_silence_point`.
@@ -34,11 +35,30 @@ fn find_silence_point(latent: &Tensor) -> Result<usize> {
     Ok(t)
 }
 
-/// Generation knobs. `seconds` sets the output length (else the 30 s fallback, 750 frames).
-#[derive(Default)]
+/// Generation knobs. With **v3**, when `seconds` is `None` the duration predictor sets the length
+/// (predicted frames × `duration_scale`, clamped to `[min_seconds, max_seconds]`). With v2 (or any
+/// model lacking the predictor), `seconds` sets the length, else the 30 s fallback (750 frames). An
+/// explicit `seconds` always wins and is itself clamped to `[min_seconds, max_seconds]`.
 pub struct GenerateOptions {
     pub seconds: Option<f64>,
     pub sampler: SamplerConfig,
+    /// v3: scale the predicted duration (1.0 = as predicted; >1 = longer/slower speech).
+    pub duration_scale: f64,
+    /// Clamp the (predicted or explicit) duration to this range, in seconds.
+    pub min_seconds: f64,
+    pub max_seconds: f64,
+}
+
+impl Default for GenerateOptions {
+    fn default() -> Self {
+        Self {
+            seconds: None,
+            sampler: SamplerConfig::default(),
+            duration_scale: 1.0,
+            min_seconds: 0.5,
+            max_seconds: 30.0,
+        }
+    }
 }
 
 /// The Irodori TTS engine: DiT + DACVAE + llm-jp tokenizer.
@@ -50,13 +70,25 @@ pub struct Irodori {
 }
 
 impl Irodori {
-    /// Load the v2 model from the HF cache (DiT safetensors + DACVAE `.pth` + llm-jp tokenizer).
+    /// Load the **v3** model (DiT + integrated Duration Predictor) — the default Irodori. With v3,
+    /// `generate` predicts the output length from text + speaker when `seconds` is `None` (instead
+    /// of the v2 30 s fallback).
     pub fn from_hf(device: &Device) -> anyhow::Result<Self> {
-        let dit_path = hf_file(DIT_REPO, "model.safetensors")?;
+        Self::load_repo(device, DIT_REPO_V3, DitConfig::v3())
+    }
+
+    /// Load the v2 model (no duration predictor — `generate` uses `seconds`, else the 30 s
+    /// fallback). Kept for the MLX parity goldens and back-compat.
+    pub fn from_hf_v2(device: &Device) -> anyhow::Result<Self> {
+        Self::load_repo(device, DIT_REPO_V2, DitConfig::v2())
+    }
+
+    fn load_repo(device: &Device, repo: &str, cfg: DitConfig) -> anyhow::Result<Self> {
+        let dit_path = hf_file(repo, "model.safetensors")?;
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[dit_path], DType::F32, device)? };
-        let dit = IrodoriDiT::load(vb, DitConfig::v2(), 8192)?;
+        let dit = IrodoriDiT::load(vb, cfg, 8192)?;
         let dacvae = Dacvae::from_hf(device)?;
-        let tokenizer = IrodoriTokenizer::v2(device)?;
+        let tokenizer = IrodoriTokenizer::v2(device)?; // llm-jp tokenizer is shared by v2 and v3
         Ok(Self { dit, dacvae, tokenizer, device: device.clone() })
     }
 
@@ -95,6 +127,7 @@ impl Irodori {
         ref_wav: Option<&str>,
         opts: &GenerateOptions,
     ) -> anyhow::Result<Tensor> {
+        let has_speaker = ref_wav.is_some();
         let (ref_latent, ref_mask) = match ref_wav {
             Some(path) => {
                 let (audio, sr) = tts_core::audio::read_wav(path)?;
@@ -117,9 +150,24 @@ impl Irodori {
             }
         };
 
-        let steps = match opts.seconds {
-            Some(s) => ((s * self.sample_rate() as f64 / self.dacvae.hop_length() as f64).ceil() as usize).max(1),
-            None => 750,
+        let hop = self.dacvae.hop_length() as f64;
+        let sr = self.sample_rate() as f64;
+        let secs_to_frames = |s: f64| ((s * sr / hop).ceil() as usize).max(1);
+        let min_f = secs_to_frames(opts.min_seconds);
+        let max_f = ((opts.max_seconds * sr / hop).floor() as usize).max(1);
+        let steps = if let Some(s) = opts.seconds {
+            // Explicit duration (v2 + v3): clamp to range, then convert to frames.
+            secs_to_frames(s.clamp(opts.min_seconds, opts.max_seconds))
+        } else {
+            // No explicit duration: v3 predicts it from text + speaker; v2 falls back to 30 s.
+            let (ids, text_mask) = self.tokenizer.encode_tensor(text, &self.device)?;
+            match self
+                .dit
+                .predict_duration_frames(&ids, &text_mask, &ref_latent, &ref_mask, has_speaker)?
+            {
+                Some(frames) => ((frames * opts.duration_scale).round() as usize).clamp(min_f, max_f),
+                None => 750,
+            }
         };
         let dim = DacvaeConfig::v2().codebook_dim;
         let x_init = Tensor::randn(0f32, 1f32, (1, steps, dim), &self.device)?;

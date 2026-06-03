@@ -1,9 +1,9 @@
 //! M3 validation: one-step DiT velocity (`forward_with_conditions`) parity vs an MLX-CPU golden.
 //!
 //!   source .cache/mlxgolden/bin/activate
-//!   HF_HOME=$HOME/.cache/huggingface SDKROOT=$(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX*.sdk|tail -1) \
+//!   HF_HOME=$PWD/.cache/huggingface SDKROOT=$(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX*.sdk|tail -1) \
 //!     DEVELOPER_DIR=/Library/Developer/CommandLineTools python ref/tools/dump_golden_dit.py
-//!   HF_HOME=$HOME/.cache/huggingface cargo test -p irodori --features accelerate \
+//!   HF_HOME=$PWD/.cache/huggingface cargo test -p irodori --features accelerate \
 //!     dit_vpred -- --ignored --nocapture
 
 use candle_core::{DType, Device};

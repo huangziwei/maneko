@@ -3,7 +3,7 @@
 //! These need the local weights (~430 MB torch `.pth` + the mlx-community safetensors), so they
 //! are `#[ignore]`d. Run with `HF_HOME` pointing at the cache that holds the Irodori repos:
 //!
-//!   HF_HOME=$HOME/.cache/huggingface \
+//!   HF_HOME=$PWD/.cache/huggingface \
 //!     cargo test -p irodori --release --features accelerate -- --ignored --nocapture
 //!
 //! `fold_parity_vs_mlx` is the key numeric check: it confirms our torch weight-norm fold +
@@ -63,7 +63,7 @@ fn decode_matches_golden() -> anyhow::Result<()> {
         panic!(
             "missing golden at {golden_path:?}; run:\n  \
              source .cache/mlxgolden/bin/activate && \
-             HF_HOME=$HOME/.cache/huggingface python ref/tools/dump_golden_dacvae.py"
+             HF_HOME=$PWD/.cache/huggingface python ref/tools/dump_golden_dacvae.py"
         );
     }
     let golden = candle_core::safetensors::load(&golden_path, &dev)?;

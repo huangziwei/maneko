@@ -7,6 +7,7 @@
 
 use crate::blocks::{additive_key_mask, RmsNorm, SwiGlu};
 use crate::config::DitConfig;
+use crate::duration::DurationPredictor;
 use crate::encoders::Encoders;
 use candle_core::{DType, Result, Tensor, D};
 use candle_nn::{Linear, Module, VarBuilder};
@@ -268,6 +269,8 @@ pub struct IrodoriDiT {
     blocks: Vec<DiffusionBlock>,
     out_norm: RmsNorm,
     out_proj: Linear,
+    /// v3 duration predictor; `None` for v2 (no `duration_predictor.*` in the checkpoint).
+    duration_predictor: Option<DurationPredictor>,
     cfg: DitConfig,
 }
 
@@ -278,6 +281,12 @@ impl IrodoriDiT {
         let blocks = (0..cfg.num_layers)
             .map(|i| DiffusionBlock::load(vb.pp("blocks").pp(i), &cfg, mlp_hidden))
             .collect::<Result<Vec<_>>>()?;
+        // v3: the integrated duration predictor (absent in v2 → None).
+        let duration_predictor = if cfg.use_duration_predictor {
+            Some(DurationPredictor::load(vb.pp("duration_predictor"), &cfg)?)
+        } else {
+            None
+        };
         Ok(Self {
             encoders: Encoders::load(vb.clone(), &cfg, rope_max_seq)?,
             cond_module: CondModule::load(vb.pp("cond_module"), cfg.timestep_embed_dim, cfg.model_dim)?,
@@ -285,6 +294,7 @@ impl IrodoriDiT {
             blocks,
             out_norm: RmsNorm::load(vb.pp("out_norm"), cfg.model_dim, cfg.norm_eps)?,
             out_proj: candle_nn::linear(cfg.model_dim, cfg.patched_latent_dim(), vb.pp("out_proj"))?,
+            duration_predictor,
             cfg,
         })
     }
@@ -308,6 +318,32 @@ impl IrodoriDiT {
         let text_state = self.encoders.encode_text(text_input_ids, text_mask)?;
         let speaker_state = self.encoders.encode_speaker(ref_latent, ref_mask)?;
         Ok((text_state, speaker_state))
+    }
+
+    /// Whether this DiT carries the v3 duration predictor.
+    pub fn has_duration_predictor(&self) -> bool {
+        self.duration_predictor.is_some()
+    }
+
+    /// Predict the output length in latent frames from text + speaker (v3 duration predictor).
+    /// Returns `None` for a v2 model (no predictor). Re-encodes the text/speaker conditions —
+    /// cheap next to sampling. `has_speaker` selects the speaker vector (`speaker_state[:,0]`)
+    /// vs. the learned `null_speaker`.
+    pub fn predict_duration_frames(
+        &self,
+        text_input_ids: &Tensor,
+        text_mask: &Tensor,
+        ref_latent: &Tensor,
+        ref_mask: &Tensor,
+        has_speaker: bool,
+    ) -> Result<Option<f64>> {
+        let Some(dp) = self.duration_predictor.as_ref() else {
+            return Ok(None);
+        };
+        let (text_state, speaker_state) =
+            self.encode_conditions(text_input_ids, text_mask, ref_latent, ref_mask)?;
+        let frames = dp.forward(&text_state, text_mask, &speaker_state, has_speaker)?;
+        Ok(Some(frames.to_vec1::<f32>()?[0] as f64))
     }
 
     /// Project the (constant) text/context KV for every block once, for reuse across steps.

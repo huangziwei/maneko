@@ -81,6 +81,7 @@ impl Irodori {
         let opts = irodori::GenerateOptions {
             seconds,
             sampler: irodori::SamplerConfig { num_steps: steps, ..irodori::SamplerConfig::default() },
+            ..Default::default()
         };
         let audio = self.inner.generate(text, voice, &opts).map_err(rt_err)?;
         flatten_audio(audio)

@@ -33,5 +33,4 @@ maneko.save_wav("jp.wav", jp, i.sample_rate)
 ```
 
 `generate(...)` returns a mono `list[float]`. Weights resolve from `HF_HOME` — point it at the
-cache holding that engine's repos (pocket: the project-local `.cache/huggingface`; Irodori:
-`~/.cache/huggingface`). See `test_bindings.py`.
+project-local `.cache/huggingface` (both engines' repos live there). See `test_bindings.py`.

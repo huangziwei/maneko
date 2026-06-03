@@ -155,4 +155,20 @@ mod tests {
         assert_eq!(collapse_ellipsis("a………b"), "a……b"); // 3 → 2
         assert_eq!(collapse_ellipsis("a…b"), "a…b"); // 1 stays 1
     }
+
+    #[test]
+    fn normalize_keeps_annotation_emojis() {
+        // v3 emoji style/emotion/SFX control: the annotation emojis are outside normalize_text's
+        // removal set, so they must pass through untouched to reach the tokenizer.
+        for (input, emoji) in [
+            ("こんにちは😊", '😊'),
+            ("テスト🎵", '🎵'),
+            ("わあ💦", '💦'),
+            ("おっと⏩", '⏩'),
+            ("ねえ🐱", '🐱'),
+        ] {
+            let out = normalize_text(input);
+            assert!(out.contains(emoji), "normalize_text stripped {emoji:?} from {input:?} → {out:?}");
+        }
+    }
 }

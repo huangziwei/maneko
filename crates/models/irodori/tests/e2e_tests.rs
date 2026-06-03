@@ -3,9 +3,9 @@
 //! ref-audio encode and resample are validated/approximated elsewhere).
 //!
 //!   source .cache/mlxgolden/bin/activate
-//!   HF_HOME=$HOME/.cache/huggingface SDKROOT=$(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX*.sdk|tail -1) \
+//!   HF_HOME=$PWD/.cache/huggingface SDKROOT=$(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX*.sdk|tail -1) \
 //!     DEVELOPER_DIR=/Library/Developer/CommandLineTools python ref/tools/dump_golden_e2e.py
-//!   HF_HOME=$HOME/.cache/huggingface cargo test -p irodori --features accelerate \
+//!   HF_HOME=$PWD/.cache/huggingface cargo test -p irodori --features accelerate \
 //!     e2e -- --ignored --nocapture
 
 use candle_core::Device;
@@ -23,7 +23,7 @@ fn e2e_matches_golden() -> anyhow::Result<()> {
     assert!(golden_path.exists(), "missing golden at {golden_path:?}; run dump_golden_e2e.py");
     let g = candle_core::safetensors::load(&golden_path, &dev)?;
 
-    let iro = Irodori::from_hf(&dev)?;
+    let iro = Irodori::from_hf_v2(&dev)?; // golden is v2 (the v3 checkpoint retrained the DiT)
     let cfg = SamplerConfig { num_steps: 8, ..SamplerConfig::default() };
     let audio = iro.run_from_latent(
         TEXT,

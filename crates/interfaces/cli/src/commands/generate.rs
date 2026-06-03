@@ -2,8 +2,8 @@
 //!
 //! `--engine pocket` (multilingual, 24 kHz, via [`pocket::Engine`]) or `--engine irodori`
 //! (Japanese, 48 kHz, via [`irodori::Irodori`]). Shared flags (text, voice, output, device) plus
-//! engine-specific ones. Weights resolve from `HF_HOME` — point it at the cache holding that
-//! engine's repos (pocket: the project-local `.cache`; irodori: `~/.cache/huggingface`).
+//! engine-specific ones. Weights resolve from `HF_HOME` — point it at the project-local
+//! `.cache/huggingface` (both engines' repos live there).
 
 use anyhow::Result;
 use candle_core::{Device, Tensor};
@@ -158,6 +158,7 @@ fn generate_irodori(args: &GenerateArgs, device: Device) -> Result<(Tensor, usiz
             num_steps: args.steps,
             ..irodori::SamplerConfig::default()
         },
+        ..Default::default()
     };
     let audio = iro.generate(&args.text, args.voice.as_deref(), &opts)?;
     let sr = iro.sample_rate();

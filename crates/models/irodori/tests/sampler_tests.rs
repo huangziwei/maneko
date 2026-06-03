@@ -1,9 +1,9 @@
 //! M4 validation: RF Euler/CFG sampler parity vs an MLX-CPU golden (init noise injected).
 //!
 //!   source .cache/mlxgolden/bin/activate
-//!   HF_HOME=$HOME/.cache/huggingface SDKROOT=$(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX*.sdk|tail -1) \
+//!   HF_HOME=$PWD/.cache/huggingface SDKROOT=$(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX*.sdk|tail -1) \
 //!     DEVELOPER_DIR=/Library/Developer/CommandLineTools python ref/tools/dump_golden_sampler.py
-//!   HF_HOME=$HOME/.cache/huggingface cargo test -p irodori --features accelerate \
+//!   HF_HOME=$PWD/.cache/huggingface cargo test -p irodori --features accelerate \
 //!     sampler -- --ignored --nocapture
 
 use candle_core::{DType, Device};

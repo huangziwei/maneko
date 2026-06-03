@@ -1,8 +1,8 @@
 //! Irodori / DACVAE configuration.
 //!
 //! Mirrors `ref/mlx-audio/.../irodori_tts/config.py` and the DACVAE `config.json`. Only the
-//! fields the Rust runtime needs are kept; the v3 duration-predictor and caption (Voice Design)
-//! knobs are omitted until those paths are ported.
+//! fields the Rust runtime needs are kept; the v3 duration-predictor fields are included (see
+//! `v3()`), while the caption (Voice Design) knobs are still omitted until that path is ported.
 
 use serde::Deserialize;
 
@@ -44,8 +44,9 @@ impl DacvaeConfig {
     }
 }
 
-/// Irodori DiT config (the `dit` block of the model `config.json`). Speaker-conditioned v2;
-/// caption (Voice Design) and v3 duration-predictor fields are omitted until ported.
+/// Irodori DiT config (the `dit` block of the model `config.json`). Speaker-conditioned; the v3
+/// duration-predictor fields are included (`use_duration_predictor` gates the module), while
+/// caption (Voice Design) fields are omitted until ported.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DitConfig {
     pub latent_dim: usize,
@@ -67,6 +68,16 @@ pub struct DitConfig {
     pub timestep_embed_dim: usize,
     pub adaln_rank: usize,
     pub norm_eps: f64,
+
+    /// Duration predictor (v3). When false (v2) the module is absent and `generate` falls back to
+    /// the `seconds` arg / 30 s default. `hidden`/`layers` size the `token_sum_adarn_zero_no_aux`
+    /// predictor; `text_dim`/`speaker_dim` above are its other dims.
+    #[serde(default)]
+    pub use_duration_predictor: bool,
+    #[serde(default)]
+    pub duration_hidden_dim: usize,
+    #[serde(default)]
+    pub duration_layers: usize,
 }
 
 impl DitConfig {
@@ -92,6 +103,20 @@ impl DitConfig {
             timestep_embed_dim: 512,
             adaln_rank: 192,
             norm_eps: 1e-5,
+            use_duration_predictor: false,
+            duration_hidden_dim: 1024,
+            duration_layers: 3,
+        }
+    }
+
+    /// `Aratako/Irodori-TTS-500M-v3` — the v2 architecture **plus** the integrated Duration
+    /// Predictor (`token_sum_adarn_zero_no_aux`). Same DiT/encoder/DACVAE family as v2 (the v3
+    /// checkpoint adds only the `duration_predictor.*` tensors); enabling it lets `generate`
+    /// predict the output length from text + speaker instead of using a fixed `seconds`.
+    pub fn v3() -> Self {
+        Self {
+            use_duration_predictor: true,
+            ..Self::v2()
         }
     }
 

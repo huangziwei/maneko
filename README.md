@@ -5,7 +5,8 @@ One native **Rust/Candle** TTS engine hosting two voice-cloning model families, 
 podman/MLX/torch in the runtime path:
 
 - **pocket-tts v2** — multilingual (en/fr/de/it/es/pt), 24 kHz, autoregressive (Mimi + FlowLM).
-- **Irodori** — Japanese, 48 kHz, flow-matching DiT + DACVAE codec.
+- **Irodori v3** — Japanese, 48 kHz, flow-matching DiT + DACVAE codec, with a built-in duration
+  predictor (auto-lengths each clip; no manual `seconds` needed).
 
 One codebase runs on **Apple Silicon** (CPU / Accelerate / Metal) and **Intel** (CPU / MKL). See
 `.claude/plans/maneko.md` for the full plan and status, and `NOTICE` for attribution.
@@ -17,8 +18,10 @@ ported stage-by-stage and parity-checked against mlx-audio (≤1.3e-4 vs CPU gol
 stage); its output is confirmed intelligible by a Whisper round-trip. pocket-tts does multilingual
 synthesis with per-language model switching and voice cloning.
 
-Deferred polish: int8/quantized perf pass, Irodori chunked long-form decode, Intel cross-platform
-validation, streaming.
+Irodori is **v3** (integrated duration predictor — the model predicts each clip's length from text +
+speaker). The port runs and is plausibility-checked on Intel; its MLX-golden numeric parity + Whisper
+round-trip are validated on Apple Silicon. Deferred polish: int8/quantized perf pass, pocket
+streaming in the unified CLI.
 
 ## Layout
 
@@ -38,7 +41,7 @@ ref/                               # vendored upstreams + golden-dump tools (git
 ## Usage
 
 Weights load from a HuggingFace cache — point `HF_HOME` at the cache holding that engine's repos
-(pocket: the project-local `.cache/huggingface`; Irodori: `~/.cache/huggingface`). Always build
+(both engines use the project-local `.cache/huggingface`). Always build
 `--release` (debug Candle is ~40× slower); `--features accelerate` on Apple Silicon CPU,
 `--features metal` for the GPU.
 
@@ -50,10 +53,10 @@ HF_HOME=$PWD/.cache/huggingface \
   cargo run --release --features accelerate -p tts-cli -- \
   generate --engine pocket --language german --voice voices/de/nathan.wav -o de.wav --text "Hallo Welt."
 
-# Irodori (Japanese, voice cloning)
-HF_HOME=$HOME/.cache/huggingface \
+# Irodori v3 (Japanese, voice cloning) — duration is auto-predicted; omit --seconds, or pass it to override
+HF_HOME=$PWD/.cache/huggingface \
   cargo run --release --features accelerate -p tts-cli -- \
-  generate --engine irodori --voice voices/ja/foo.wav --seconds 5 --steps 40 -o ja.wav --text "こんにちは。"
+  generate --engine irodori --voice voices/ja/ref.wav --steps 40 -o ja.wav --text "こんにちは。"
 ```
 
 **Python** (`maneko`): build with `maturin develop --features accelerate` (in `crates/interfaces/python`), then:
