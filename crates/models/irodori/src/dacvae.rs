@@ -119,9 +119,81 @@ impl DecoderBlock {
     }
 }
 
-/// The DACVAE synthesis stack: `quantizer_out_proj` → `conv_in` → N `DecoderBlock`s →
-/// `snake_out` → `conv_out` → tanh.
+/// Encoder downsampling block: ResidualUnit(d=1,3,9) → Snake → strided WNConv1d.
+struct EncoderBlock {
+    res1: ResidualUnit,
+    res3: ResidualUnit,
+    res9: ResidualUnit,
+    snake: Tensor,
+    conv: Conv1d,
+}
+
+impl EncoderBlock {
+    /// `base` is the torch `encoder.block.{i+1}` prefix (its `.block` Sequential holds res×3,
+    /// Snake, downsample conv at sub-indices 0,1,2,3,4).
+    fn load(w: &Weights, base: &str, stride: usize) -> Result<Self> {
+        Ok(Self {
+            res1: ResidualUnit::load(w, &format!("{base}.block.0.block"), 1)?,
+            res3: ResidualUnit::load(w, &format!("{base}.block.1.block"), 3)?,
+            res9: ResidualUnit::load(w, &format!("{base}.block.2.block"), 9)?,
+            snake: w.get(&format!("{base}.block.3.alpha"))?.clone(),
+            // downsample: k=2·stride, stride, padding=ceil(stride/2).
+            conv: wn_conv1d(w, &format!("{base}.block.4"), stride.div_ceil(2), stride, 1)?,
+        })
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let x = self.res1.forward(x)?;
+        let x = self.res3.forward(&x)?;
+        let x = self.res9.forward(&x)?;
+        let x = snake(&x, &self.snake)?;
+        self.conv.forward(&x)
+    }
+}
+
+/// DACVAE encoder: `conv_in` → N `EncoderBlock`s → `snake_out` → `conv_out`.
+struct Encoder {
+    conv_in: Conv1d,
+    blocks: Vec<EncoderBlock>,
+    snake_out: Tensor,
+    conv_out: Conv1d,
+}
+
+impl Encoder {
+    fn load(w: &Weights, cfg: &DacvaeConfig) -> Result<Self> {
+        let conv_in = wn_conv1d(w, "encoder.block.0", 3, 1, 1)?; // 1 → encoder_dim, k=7
+        let blocks = cfg
+            .encoder_rates
+            .iter()
+            .enumerate()
+            .map(|(i, &stride)| EncoderBlock::load(w, &format!("encoder.block.{}", i + 1), stride))
+            .collect::<Result<Vec<_>>>()?;
+        let n = cfg.encoder_rates.len();
+        let snake_out = w.get(&format!("encoder.block.{}.alpha", n + 1))?.clone();
+        let conv_out = wn_conv1d(w, &format!("encoder.block.{}", n + 2), 1, 1, 1)?; // →latent_dim, k=3
+        Ok(Self {
+            conv_in,
+            blocks,
+            snake_out,
+            conv_out,
+        })
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let mut x = self.conv_in.forward(x)?;
+        for block in &self.blocks {
+            x = block.forward(&x)?;
+        }
+        let x = snake(&x, &self.snake_out)?;
+        self.conv_out.forward(&x)
+    }
+}
+
+/// The DACVAE: encode (ref audio → latent) and the synthesis stack (`quantizer_out_proj` →
+/// `conv_in` → N `DecoderBlock`s → `snake_out` → `conv_out` → tanh).
 pub struct Dacvae {
+    encoder: Encoder,
+    quantizer_in_proj: Conv1d,
     quantizer_out_proj: Conv1d,
     conv_in: Conv1d,
     blocks: Vec<DecoderBlock>,
@@ -132,6 +204,9 @@ pub struct Dacvae {
 
 impl Dacvae {
     pub fn load(w: &Weights, cfg: DacvaeConfig) -> Result<Self> {
+        // Encoder (ref-audio → latent) + VAE input projection (latent_dim → 2·codebook_dim, k=1).
+        let encoder = Encoder::load(w, &cfg)?;
+        let quantizer_in_proj = wn_conv1d(w, "quantizer.in_proj", 0, 1, 1)?;
         // codebook_dim (32) → latent_dim (1024), k=1.
         let quantizer_out_proj = wn_conv1d(w, "quantizer.out_proj", 0, 1, 1)?;
         // latent_dim → decoder_dim, k=7.
@@ -151,6 +226,8 @@ impl Dacvae {
         let conv_out = wn_conv1d(w, "decoder.wm_model.encoder_block.pre.1", 3, 1, 1)?;
 
         Ok(Self {
+            encoder,
+            quantizer_in_proj,
             quantizer_out_proj,
             conv_in,
             blocks,
@@ -158,6 +235,28 @@ impl Dacvae {
             conv_out,
             cfg,
         })
+    }
+
+    /// Right-pad a waveform `(B,1,L)` so `L` is a multiple of `hop_length`.
+    fn pad_to_hop(&self, x: &Tensor) -> Result<Tensor> {
+        let l = x.dim(D::Minus1)?;
+        let hop = self.cfg.hop_length();
+        let rem = l % hop;
+        if rem == 0 {
+            Ok(x.clone())
+        } else {
+            x.pad_with_zeros(D::Minus1, 0, hop - rem)
+        }
+    }
+
+    /// Encode a mono waveform `(B, 1, L)` (48 kHz) to a VAE-mean latent `(B, T, codebook_dim)`,
+    /// the reference latent for voice cloning. `T = ceil(L / hop_length)`.
+    pub fn encode(&self, waveform: &Tensor) -> Result<Tensor> {
+        let w = self.pad_to_hop(waveform)?;
+        let z = self.encoder.forward(&w)?; // (B, latent_dim, T)
+        let proj = self.quantizer_in_proj.forward(&z)?; // (B, 2·codebook_dim, T)
+        let mean = proj.narrow(1, 0, self.cfg.codebook_dim)?; // VAE mean = first half: (B, codebook_dim, T)
+        mean.transpose(1, 2)?.contiguous() // (B, T, codebook_dim)
     }
 
     pub fn sample_rate(&self) -> usize {

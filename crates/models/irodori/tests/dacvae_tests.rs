@@ -87,6 +87,28 @@ fn decode_matches_golden() -> anyhow::Result<()> {
 }
 
 #[test]
+#[ignore = "needs local weights + golden (run ref/tools/dump_golden_encode.py first)"]
+fn encode_matches_golden() -> anyhow::Result<()> {
+    let dev = Device::Cpu;
+    let golden_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../.cache/golden/dacvae_encode.safetensors");
+    assert!(golden_path.exists(), "missing golden at {golden_path:?}; run dump_golden_encode.py");
+    let g = candle_core::safetensors::load(&golden_path, &dev)?;
+    let audio = g.get("audio").unwrap(); // (1, L)
+    let (b, l) = audio.dims2()?;
+    let audio = audio.reshape((b, 1, l))?; // (1,1,L)
+
+    let dac = Dacvae::from_hf(&dev)?;
+    let ref_latent = dac.encode(&audio)?; // (1, T, codebook_dim)
+    let golden = g.get("ref_latent").unwrap();
+    assert_eq!(ref_latent.dims(), golden.dims(), "ref_latent shape");
+    let diff = max_abs_diff(&ref_latent, golden)?;
+    eprintln!("encode ref_latent diff: {diff:.3e}  shape {:?}", ref_latent.dims());
+    assert!(diff < 1e-3, "encode diverges from MLX golden: {diff}");
+    Ok(())
+}
+
+#[test]
 #[ignore = "needs local DACVAE weights"]
 fn fold_parity_vs_mlx() -> anyhow::Result<()> {
     let dev = Device::Cpu;

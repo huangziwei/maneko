@@ -27,6 +27,8 @@ serde.workspace = true
 serde_json.workspace = true
 hf-hub.workspace = true
 tracing.workspace = true
+# llm-jp tokenizer (tokenizer.json); onig for its pre-tokenizer regex.
+tokenizers = { workspace = true, features = ["onig"] }
 
 [dev-dependencies]
 candle-core.workspace = true

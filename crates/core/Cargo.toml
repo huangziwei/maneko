@@ -23,3 +23,4 @@ candle-core.workspace = true
 candle-nn.workspace = true
 anyhow.workspace = true
 hound.workspace = true
+rubato = "0.14.1"
