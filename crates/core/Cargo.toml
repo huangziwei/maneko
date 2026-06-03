@@ -11,3 +11,15 @@ categories.workspace = true
 
 [lib]
 crate-type = ["rlib"]
+
+[features]
+default = []
+mkl = ["candle-core/mkl", "candle-nn/mkl"]
+accelerate = ["candle-core/accelerate", "candle-nn/accelerate"]
+metal = ["candle-core/metal", "candle-nn/metal"]
+
+[dependencies]
+candle-core.workspace = true
+candle-nn.workspace = true
+anyhow.workspace = true
+hound.workspace = true
