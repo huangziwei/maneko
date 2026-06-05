@@ -132,15 +132,11 @@ impl Irodori {
         Ok(audio.narrow(2, 0, trim)?.reshape((1, trim))?)
     }
 
-    /// Generate speech for `text` in the voice of an optional reference WAV (any sample rate;
-    /// resampled to 48 kHz and DACVAE-encoded). Draws fresh Gaussian noise. Returns `(1, samples)`.
-    pub fn generate(
-        &self,
-        text: &str,
-        ref_wav: Option<&str>,
-        opts: &GenerateOptions,
-    ) -> anyhow::Result<Tensor> {
-        let has_speaker = ref_wav.is_some();
+    /// Encode a reference voice (or `None` → the zero/no-speaker latent) **once**, for reuse across
+    /// many [`generate_with_ref`](Self::generate_with_ref) calls — encode the narrator once, then
+    /// generate every chunk without re-paying the DACVAE-encode (a fixed cost that dominates at low
+    /// step counts). Any sample rate; resampled to 48 kHz and DACVAE-encoded onto the engine device.
+    pub fn encode_ref(&self, ref_wav: Option<&str>) -> anyhow::Result<RefVoice> {
         let (ref_latent, ref_mask) = match ref_wav {
             Some(path) => {
                 let (audio, sr) = tts_core::audio::read_wav(path)?;
@@ -162,7 +158,17 @@ impl Irodori {
                 )
             }
         };
+        Ok(RefVoice { ref_latent, ref_mask, has_speaker: ref_wav.is_some() })
+    }
 
+    /// Generate using a **pre-encoded** reference voice (no per-call DACVAE-encode). Draws fresh
+    /// Gaussian noise. Returns `(1, samples)`.
+    pub fn generate_with_ref(
+        &self,
+        text: &str,
+        voice: &RefVoice,
+        opts: &GenerateOptions,
+    ) -> anyhow::Result<Tensor> {
         let hop = self.dacvae.hop_length() as f64;
         let sr = self.sample_rate() as f64;
         let secs_to_frames = |s: f64| ((s * sr / hop).ceil() as usize).max(1);
@@ -174,16 +180,41 @@ impl Irodori {
         } else {
             // No explicit duration: v3 predicts it from text + speaker; v2 falls back to 30 s.
             let (ids, text_mask) = self.tokenizer.encode_tensor(text, &self.device)?;
-            match self
-                .dit
-                .predict_duration_frames(&ids, &text_mask, &ref_latent, &ref_mask, has_speaker)?
-            {
+            match self.dit.predict_duration_frames(
+                &ids,
+                &text_mask,
+                &voice.ref_latent,
+                &voice.ref_mask,
+                voice.has_speaker,
+            )? {
                 Some(frames) => ((frames * opts.duration_scale).round() as usize).clamp(min_f, max_f),
                 None => 750,
             }
         };
         let dim = DacvaeConfig::v2().codebook_dim;
         let x_init = Tensor::randn(0f32, 1f32, (1, steps, dim), &self.device)?;
-        self.run_from_latent(text, &ref_latent, &ref_mask, &x_init, &opts.sampler)
+        self.run_from_latent(text, &voice.ref_latent, &voice.ref_mask, &x_init, &opts.sampler)
     }
+
+    /// Generate speech for `text` in the voice of an optional reference WAV. Encodes the reference
+    /// **each call**; for many clips in one voice, use [`encode_ref`](Self::encode_ref) +
+    /// [`generate_with_ref`](Self::generate_with_ref) to skip the repeated encode.
+    pub fn generate(
+        &self,
+        text: &str,
+        ref_wav: Option<&str>,
+        opts: &GenerateOptions,
+    ) -> anyhow::Result<Tensor> {
+        let voice = self.encode_ref(ref_wav)?;
+        self.generate_with_ref(text, &voice, opts)
+    }
+}
+
+/// A reference voice encoded to its DACVAE latent — **encode once, reuse across many clips**. For a
+/// book (one narrator, many chunks) this amortizes the per-call DACVAE-encode — a fixed cost that
+/// dominates once steps are low — and keeps timbre consistent. Holds tensors on the engine's device.
+pub struct RefVoice {
+    ref_latent: Tensor,
+    ref_mask: Tensor,
+    has_speaker: bool,
 }

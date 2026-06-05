@@ -27,7 +27,7 @@ pub use dacvae::Dacvae;
 pub use dit::IrodoriDiT;
 pub use duration::DurationPredictor;
 pub use encoders::Encoders;
-pub use engine::{GenerateOptions, Irodori};
+pub use engine::{GenerateOptions, Irodori, RefVoice};
 pub use sampler::{sample_euler_cfg, SamplerConfig};
 pub use text::{normalize_text, IrodoriTokenizer};
 pub use weights::Weights;
