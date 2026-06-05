@@ -12,6 +12,7 @@ use irodori::weights::hf_file;
 use irodori::{DitConfig, IrodoriDiT};
 
 const DIT_REPO: &str = "Aratako/Irodori-TTS-500M-v2";
+const DIT_REPO_V3: &str = "Aratako/Irodori-TTS-500M-v3";
 
 #[test]
 #[ignore = "needs DiT weights + golden (run ref/tools/dump_golden_dit.py first)"]
@@ -49,5 +50,46 @@ fn dit_vpred_matches_golden() -> anyhow::Result<()> {
     let diff = (&v_pred - golden)?.abs()?.max_all()?.to_scalar::<f32>()?;
     eprintln!("v_pred diff: {diff:.3e}  shape {:?}", v_pred.dims());
     assert!(diff < 1e-3, "v_pred diverges from MLX golden: {diff}");
+    Ok(())
+}
+
+#[test]
+#[ignore = "needs v3 DiT weights + golden (run ref/tools/dump_golden_dit_v3.py first)"]
+fn dit_vpred_v3_matches_golden() -> anyhow::Result<()> {
+    // The v3 checkpoint retrained the DiT, so its weights need their own v_pred parity check
+    // (same forward path as v2 — only the weights differ).
+    let dev = Device::Cpu;
+    let golden_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../.cache/golden/dit_vpred_v3.safetensors");
+    assert!(golden_path.exists(), "missing golden at {golden_path:?}; run dump_golden_dit_v3.py");
+    let g = candle_core::safetensors::load(&golden_path, &dev)?;
+
+    let dit_path = hf_file(DIT_REPO_V3, "model.safetensors")?;
+    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[dit_path], DType::F32, &dev)? };
+    let dit = IrodoriDiT::load(vb, DitConfig::v3(), 4096)?;
+
+    let text_mask = g.get("text_mask").unwrap().clone();
+    let ref_mask = g.get("ref_mask").unwrap().clone();
+    let (text_state, speaker_state) = dit.encode_conditions(
+        g.get("input_ids").unwrap(),
+        &text_mask,
+        g.get("ref_latent").unwrap(),
+        &ref_mask,
+    )?;
+    let kv = dit.build_kv_cache(&text_state, &speaker_state)?;
+    let v_pred = dit.forward_with_conditions(
+        g.get("x_t").unwrap(),
+        g.get("t").unwrap(),
+        &text_mask,
+        &ref_mask,
+        &kv,
+        0,
+    )?;
+
+    let golden = g.get("v_pred").unwrap();
+    assert_eq!(v_pred.dims(), golden.dims(), "v_pred shape");
+    let diff = (&v_pred - golden)?.abs()?.max_all()?.to_scalar::<f32>()?;
+    eprintln!("v3 v_pred diff: {diff:.3e}  shape {:?}", v_pred.dims());
+    assert!(diff < 1e-3, "v3 v_pred diverges from MLX golden: {diff}");
     Ok(())
 }
