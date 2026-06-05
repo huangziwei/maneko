@@ -1,12 +1,11 @@
 //! Shared transformer building blocks for the encoders and the DiT.
 //!
-//! Loaded from the F32 DiT safetensors via [`VarBuilder`]. Conventions match
+//! Loaded from the F32 DiT safetensors (or a q8 GGUF) via the shared [`Vb`]. Conventions match
 //! `ref/mlx-audio/.../irodori_tts/model.py`: per-head q/k RMSNorm applied in `(B,S,H,Dh)` layout,
 //! **interleaved** RoPE, a `sigmoid(gate)` on the attention output, and SwiGLU MLPs.
 
 use candle_core::{Result, Tensor};
-use candle_nn::{Linear, Module, VarBuilder};
-use tts_core::{rms_norm, sdpa, RotaryEmbedding};
+use tts_core::{rms_norm, sdpa, QLinear, RotaryEmbedding, Vb};
 
 /// RMSNorm with a learned weight (channel `(D,)` or per-head `(H, Dh)` — both broadcast over the
 /// leading axes since the norm is over the last dim).
@@ -16,7 +15,7 @@ pub struct RmsNorm {
 }
 
 impl RmsNorm {
-    pub fn load<S: Into<candle_core::Shape>>(vb: VarBuilder, shape: S, eps: f64) -> Result<Self> {
+    pub fn load<S: Into<candle_core::Shape>>(vb: Vb, shape: S, eps: f64) -> Result<Self> {
         Ok(Self {
             weight: vb.get(shape, "weight")?,
             eps,
@@ -30,17 +29,17 @@ impl RmsNorm {
 
 /// SwiGLU MLP: `w2(silu(w1(x)) · w3(x))`.
 pub struct SwiGlu {
-    w1: Linear,
-    w2: Linear,
-    w3: Linear,
+    w1: QLinear,
+    w2: QLinear,
+    w3: QLinear,
 }
 
 impl SwiGlu {
-    pub fn load(vb: VarBuilder, dim: usize, hidden: usize) -> Result<Self> {
+    pub fn load(vb: Vb, dim: usize, hidden: usize) -> Result<Self> {
         Ok(Self {
-            w1: candle_nn::linear_no_bias(dim, hidden, vb.pp("w1"))?,
-            w2: candle_nn::linear_no_bias(hidden, dim, vb.pp("w2"))?,
-            w3: candle_nn::linear_no_bias(dim, hidden, vb.pp("w3"))?,
+            w1: vb.pp("w1").qlinear(dim, hidden, false)?,
+            w2: vb.pp("w2").qlinear(hidden, dim, false)?,
+            w3: vb.pp("w3").qlinear(dim, hidden, false)?,
         })
     }
 
@@ -59,11 +58,11 @@ pub fn additive_key_mask(mask: &Tensor) -> Result<Tensor> {
 
 /// Non-causal self-attention with full interleaved RoPE and a sigmoid output gate (encoders).
 pub struct SelfAttention {
-    wq: Linear,
-    wk: Linear,
-    wv: Linear,
-    wo: Linear,
-    gate: Linear,
+    wq: QLinear,
+    wk: QLinear,
+    wv: QLinear,
+    wo: QLinear,
+    gate: QLinear,
     q_norm: RmsNorm,
     k_norm: RmsNorm,
     heads: usize,
@@ -71,14 +70,14 @@ pub struct SelfAttention {
 }
 
 impl SelfAttention {
-    pub fn load(vb: VarBuilder, dim: usize, heads: usize, eps: f64) -> Result<Self> {
+    pub fn load(vb: Vb, dim: usize, heads: usize, eps: f64) -> Result<Self> {
         let head_dim = dim / heads;
         Ok(Self {
-            wq: candle_nn::linear_no_bias(dim, dim, vb.pp("wq"))?,
-            wk: candle_nn::linear_no_bias(dim, dim, vb.pp("wk"))?,
-            wv: candle_nn::linear_no_bias(dim, dim, vb.pp("wv"))?,
-            wo: candle_nn::linear_no_bias(dim, dim, vb.pp("wo"))?,
-            gate: candle_nn::linear_no_bias(dim, dim, vb.pp("gate"))?,
+            wq: vb.pp("wq").qlinear(dim, dim, false)?,
+            wk: vb.pp("wk").qlinear(dim, dim, false)?,
+            wv: vb.pp("wv").qlinear(dim, dim, false)?,
+            wo: vb.pp("wo").qlinear(dim, dim, false)?,
+            gate: vb.pp("gate").qlinear(dim, dim, false)?,
             q_norm: RmsNorm::load(vb.pp("q_norm"), (heads, head_dim), eps)?,
             k_norm: RmsNorm::load(vb.pp("k_norm"), (heads, head_dim), eps)?,
             heads,
@@ -117,7 +116,7 @@ pub struct TextBlock {
 }
 
 impl TextBlock {
-    pub fn load(vb: VarBuilder, dim: usize, heads: usize, mlp_hidden: usize, eps: f64) -> Result<Self> {
+    pub fn load(vb: Vb, dim: usize, heads: usize, mlp_hidden: usize, eps: f64) -> Result<Self> {
         Ok(Self {
             attention_norm: RmsNorm::load(vb.pp("attention_norm"), dim, eps)?,
             attention: SelfAttention::load(vb.pp("attention"), dim, heads, eps)?,

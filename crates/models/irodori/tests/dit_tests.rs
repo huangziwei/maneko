@@ -25,7 +25,7 @@ fn dit_vpred_matches_golden() -> anyhow::Result<()> {
 
     let dit_path = hf_file(DIT_REPO, "model.safetensors")?;
     let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[dit_path], DType::F32, &dev)? };
-    let dit = IrodoriDiT::load(vb, DitConfig::v2(), 4096)?;
+    let dit = IrodoriDiT::load(tts_core::Vb::Full(vb), DitConfig::v2(), 4096)?;
 
     let text_mask = g.get("text_mask").unwrap().clone();
     let ref_mask = g.get("ref_mask").unwrap().clone();
@@ -66,7 +66,7 @@ fn dit_vpred_v3_matches_golden() -> anyhow::Result<()> {
 
     let dit_path = hf_file(DIT_REPO_V3, "model.safetensors")?;
     let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[dit_path], DType::F32, &dev)? };
-    let dit = IrodoriDiT::load(vb, DitConfig::v3(), 4096)?;
+    let dit = IrodoriDiT::load(tts_core::Vb::Full(vb), DitConfig::v3(), 4096)?;
 
     let text_mask = g.get("text_mask").unwrap().clone();
     let ref_mask = g.get("ref_mask").unwrap().clone();

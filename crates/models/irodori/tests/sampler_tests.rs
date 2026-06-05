@@ -24,7 +24,7 @@ fn sampler_matches_golden() -> anyhow::Result<()> {
 
     let dit_path = hf_file(DIT_REPO, "model.safetensors")?;
     let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[dit_path], DType::F32, &dev)? };
-    let dit = IrodoriDiT::load(vb, DitConfig::v2(), 4096)?;
+    let dit = IrodoriDiT::load(tts_core::Vb::Full(vb), DitConfig::v2(), 4096)?;
 
     // num_steps must match the golden dump (8).
     let cfg = SamplerConfig {

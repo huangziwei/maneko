@@ -86,7 +86,7 @@ impl Irodori {
     fn load_repo(device: &Device, repo: &str, cfg: DitConfig) -> anyhow::Result<Self> {
         let dit_path = hf_file(repo, "model.safetensors")?;
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[dit_path], DType::F32, device)? };
-        let dit = IrodoriDiT::load(vb, cfg, 8192)?;
+        let dit = IrodoriDiT::load(tts_core::Vb::Full(vb), cfg, 8192)?;
         let dacvae = Dacvae::from_hf(device)?;
         let tokenizer = IrodoriTokenizer::v2(device)?; // llm-jp tokenizer is shared by v2 and v3
         Ok(Self { dit, dacvae, tokenizer, device: device.clone() })

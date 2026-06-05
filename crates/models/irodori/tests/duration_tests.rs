@@ -32,7 +32,7 @@ fn duration_frames_match_golden() -> anyhow::Result<()> {
 
     let dit_path = hf_file(DIT_REPO_V3, "model.safetensors")?;
     let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[dit_path], DType::F32, &dev)? };
-    let dit = IrodoriDiT::load(vb, DitConfig::v3(), 4096)?;
+    let dit = IrodoriDiT::load(tts_core::Vb::Full(vb), DitConfig::v3(), 4096)?;
     assert!(dit.has_duration_predictor(), "v3 DiT must carry the duration predictor");
 
     let ids = g.get("input_ids").unwrap();

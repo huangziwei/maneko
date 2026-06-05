@@ -10,8 +10,7 @@ use crate::config::DitConfig;
 use crate::duration::DurationPredictor;
 use crate::encoders::Encoders;
 use candle_core::{DType, Result, Tensor, D};
-use candle_nn::{Linear, Module, VarBuilder};
-use tts_core::{sdpa, RotaryEmbedding};
+use tts_core::{sdpa, QLinear, RotaryEmbedding, Vb};
 
 /// Per-block, per-context key/value cache in `(B, H, S, Dh)` layout (`k` is RMS-normed).
 type Kv = (Tensor, Tensor);
@@ -30,17 +29,17 @@ fn timestep_embedding(t: &Tensor, dim: usize) -> Result<Tensor> {
 
 /// Timestep → conditioning embedding: `Linear→SiLU→Linear→SiLU→Linear(→3·model_dim)`, no bias.
 struct CondModule {
-    l0: Linear,
-    l2: Linear,
-    l4: Linear,
+    l0: QLinear,
+    l2: QLinear,
+    l4: QLinear,
 }
 
 impl CondModule {
-    fn load(vb: VarBuilder, in_dim: usize, model_dim: usize) -> Result<Self> {
+    fn load(vb: Vb, in_dim: usize, model_dim: usize) -> Result<Self> {
         Ok(Self {
-            l0: candle_nn::linear_no_bias(in_dim, model_dim, vb.pp("0"))?,
-            l2: candle_nn::linear_no_bias(model_dim, model_dim, vb.pp("2"))?,
-            l4: candle_nn::linear_no_bias(model_dim, model_dim * 3, vb.pp("4"))?,
+            l0: vb.pp("0").qlinear(in_dim, model_dim, false)?,
+            l2: vb.pp("2").qlinear(model_dim, model_dim, false)?,
+            l4: vb.pp("4").qlinear(model_dim, model_dim * 3, false)?,
         })
     }
 
@@ -55,30 +54,30 @@ impl CondModule {
 /// Low-rank adaptive LayerNorm: split `cond_embed` into shift/scale/gate, each `up(silu(down(·)))+·`
 /// (residual); weightless RMS-norm of `x`, then `x·(1+scale)+shift`; `gate = tanh(gate)`.
 struct LowRankAdaLN {
-    shift_down: Linear,
-    scale_down: Linear,
-    gate_down: Linear,
-    shift_up: Linear,
-    scale_up: Linear,
-    gate_up: Linear,
+    shift_down: QLinear,
+    scale_down: QLinear,
+    gate_down: QLinear,
+    shift_up: QLinear,
+    scale_up: QLinear,
+    gate_up: QLinear,
     eps: f64,
 }
 
 impl LowRankAdaLN {
-    fn load(vb: VarBuilder, model_dim: usize, rank: usize, eps: f64) -> Result<Self> {
+    fn load(vb: Vb, model_dim: usize, rank: usize, eps: f64) -> Result<Self> {
         let rank = rank.clamp(1, model_dim);
         Ok(Self {
-            shift_down: candle_nn::linear_no_bias(model_dim, rank, vb.pp("shift_down"))?,
-            scale_down: candle_nn::linear_no_bias(model_dim, rank, vb.pp("scale_down"))?,
-            gate_down: candle_nn::linear_no_bias(model_dim, rank, vb.pp("gate_down"))?,
-            shift_up: candle_nn::linear(rank, model_dim, vb.pp("shift_up"))?,
-            scale_up: candle_nn::linear(rank, model_dim, vb.pp("scale_up"))?,
-            gate_up: candle_nn::linear(rank, model_dim, vb.pp("gate_up"))?,
+            shift_down: vb.pp("shift_down").qlinear(model_dim, rank, false)?,
+            scale_down: vb.pp("scale_down").qlinear(model_dim, rank, false)?,
+            gate_down: vb.pp("gate_down").qlinear(model_dim, rank, false)?,
+            shift_up: vb.pp("shift_up").qlinear(rank, model_dim, true)?,
+            scale_up: vb.pp("scale_up").qlinear(rank, model_dim, true)?,
+            gate_up: vb.pp("gate_up").qlinear(rank, model_dim, true)?,
             eps,
         })
     }
 
-    fn branch(&self, down: &Linear, up: &Linear, c: &Tensor) -> Result<Tensor> {
+    fn branch(&self, down: &QLinear, up: &QLinear, c: &Tensor) -> Result<Tensor> {
         up.forward(&down.forward(&candle_nn::ops::silu(c)?)?)? + c
     }
 
@@ -102,15 +101,15 @@ impl LowRankAdaLN {
 
 /// JointAttention: latent self-attention + cross-attention to text and speaker contexts.
 struct JointAttention {
-    wq: Linear,
-    wk: Linear,
-    wv: Linear,
-    wo: Linear,
-    gate: Linear,
-    wk_text: Linear,
-    wv_text: Linear,
-    wk_speaker: Linear,
-    wv_speaker: Linear,
+    wq: QLinear,
+    wk: QLinear,
+    wv: QLinear,
+    wo: QLinear,
+    gate: QLinear,
+    wk_text: QLinear,
+    wv_text: QLinear,
+    wk_speaker: QLinear,
+    wv_speaker: QLinear,
     q_norm: RmsNorm,
     k_norm: RmsNorm,
     heads: usize,
@@ -118,19 +117,19 @@ struct JointAttention {
 }
 
 impl JointAttention {
-    fn load(vb: VarBuilder, cfg: &DitConfig) -> Result<Self> {
+    fn load(vb: Vb, cfg: &DitConfig) -> Result<Self> {
         let dim = cfg.model_dim;
         let (h, hd) = (cfg.num_heads, cfg.head_dim());
         Ok(Self {
-            wq: candle_nn::linear_no_bias(dim, dim, vb.pp("wq"))?,
-            wk: candle_nn::linear_no_bias(dim, dim, vb.pp("wk"))?,
-            wv: candle_nn::linear_no_bias(dim, dim, vb.pp("wv"))?,
-            wo: candle_nn::linear_no_bias(dim, dim, vb.pp("wo"))?,
-            gate: candle_nn::linear_no_bias(dim, dim, vb.pp("gate"))?,
-            wk_text: candle_nn::linear_no_bias(cfg.text_dim, dim, vb.pp("wk_text"))?,
-            wv_text: candle_nn::linear_no_bias(cfg.text_dim, dim, vb.pp("wv_text"))?,
-            wk_speaker: candle_nn::linear_no_bias(cfg.speaker_dim, dim, vb.pp("wk_speaker"))?,
-            wv_speaker: candle_nn::linear_no_bias(cfg.speaker_dim, dim, vb.pp("wv_speaker"))?,
+            wq: vb.pp("wq").qlinear(dim, dim, false)?,
+            wk: vb.pp("wk").qlinear(dim, dim, false)?,
+            wv: vb.pp("wv").qlinear(dim, dim, false)?,
+            wo: vb.pp("wo").qlinear(dim, dim, false)?,
+            gate: vb.pp("gate").qlinear(dim, dim, false)?,
+            wk_text: vb.pp("wk_text").qlinear(cfg.text_dim, dim, false)?,
+            wv_text: vb.pp("wv_text").qlinear(cfg.text_dim, dim, false)?,
+            wk_speaker: vb.pp("wk_speaker").qlinear(cfg.speaker_dim, dim, false)?,
+            wv_speaker: vb.pp("wv_speaker").qlinear(cfg.speaker_dim, dim, false)?,
             q_norm: RmsNorm::load(vb.pp("q_norm"), (h, hd), cfg.norm_eps)?,
             k_norm: RmsNorm::load(vb.pp("k_norm"), (h, hd), cfg.norm_eps)?,
             heads: h,
@@ -139,7 +138,7 @@ impl JointAttention {
     }
 
     /// Project a context `(B,S,ctx)` to `(k,v)` in `(B,H,S,Dh)` (k RMS-normed, no RoPE).
-    fn project_kv(&self, state: &Tensor, wk: &Linear, wv: &Linear) -> Result<Kv> {
+    fn project_kv(&self, state: &Tensor, wk: &QLinear, wv: &QLinear) -> Result<Kv> {
         let (b, s, _) = state.dims3()?;
         let (h, hd) = (self.heads, self.head_dim);
         let k = self.k_norm.forward(&wk.forward(state)?.reshape((b, s, h, hd))?)?;
@@ -203,7 +202,7 @@ struct DiffusionBlock {
 }
 
 impl DiffusionBlock {
-    fn load(vb: VarBuilder, cfg: &DitConfig, mlp_hidden: usize) -> Result<Self> {
+    fn load(vb: Vb, cfg: &DitConfig, mlp_hidden: usize) -> Result<Self> {
         Ok(Self {
             attention: JointAttention::load(vb.pp("attention"), cfg)?,
             mlp: SwiGlu::load(vb.pp("mlp"), cfg.model_dim, mlp_hidden)?,
@@ -265,18 +264,18 @@ impl KvCaches {
 pub struct IrodoriDiT {
     encoders: Encoders,
     cond_module: CondModule,
-    in_proj: Linear,
+    in_proj: QLinear,
     blocks: Vec<DiffusionBlock>,
     out_norm: RmsNorm,
-    out_proj: Linear,
+    out_proj: QLinear,
     /// v3 duration predictor; `None` for v2 (no `duration_predictor.*` in the checkpoint).
     duration_predictor: Option<DurationPredictor>,
     cfg: DitConfig,
 }
 
 impl IrodoriDiT {
-    /// Load from a DiT `VarBuilder` root. `rope_max_seq` bounds the shared RoPE table.
-    pub fn load(vb: VarBuilder, cfg: DitConfig, rope_max_seq: usize) -> Result<Self> {
+    /// Load from a DiT [`Vb`] root (f32 safetensors or q8 GGUF). `rope_max_seq` bounds the RoPE table.
+    pub fn load(vb: Vb, cfg: DitConfig, rope_max_seq: usize) -> Result<Self> {
         let mlp_hidden = (cfg.model_dim as f64 * cfg.mlp_ratio) as usize;
         let blocks = (0..cfg.num_layers)
             .map(|i| DiffusionBlock::load(vb.pp("blocks").pp(i), &cfg, mlp_hidden))
@@ -290,10 +289,10 @@ impl IrodoriDiT {
         Ok(Self {
             encoders: Encoders::load(vb.clone(), &cfg, rope_max_seq)?,
             cond_module: CondModule::load(vb.pp("cond_module"), cfg.timestep_embed_dim, cfg.model_dim)?,
-            in_proj: candle_nn::linear(cfg.patched_latent_dim(), cfg.model_dim, vb.pp("in_proj"))?,
+            in_proj: vb.pp("in_proj").qlinear(cfg.patched_latent_dim(), cfg.model_dim, true)?,
             blocks,
             out_norm: RmsNorm::load(vb.pp("out_norm"), cfg.model_dim, cfg.norm_eps)?,
-            out_proj: candle_nn::linear(cfg.model_dim, cfg.patched_latent_dim(), vb.pp("out_proj"))?,
+            out_proj: vb.pp("out_proj").qlinear(cfg.model_dim, cfg.patched_latent_dim(), true)?,
             duration_predictor,
             cfg,
         })

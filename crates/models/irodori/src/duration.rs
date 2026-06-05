@@ -13,7 +13,7 @@
 use crate::blocks::{RmsNorm, SwiGlu};
 use crate::config::DitConfig;
 use candle_core::{DType, Result, Tensor, D};
-use candle_nn::{Linear, Module, VarBuilder};
+use tts_core::{QLinear, Vb};
 
 /// One duration block: `x + tanh(gate) · SwiGLU(AdaLN-Zero(RMSNorm(x); speaker))`.
 ///
@@ -23,15 +23,15 @@ use candle_nn::{Linear, Module, VarBuilder};
 struct DurationSwiGluBlock {
     norm: RmsNorm,
     mlp: SwiGlu,
-    modulation: Linear,
+    modulation: QLinear,
 }
 
 impl DurationSwiGluBlock {
-    fn load(vb: VarBuilder, dim: usize, cond_dim: usize, eps: f64) -> Result<Self> {
+    fn load(vb: Vb, dim: usize, cond_dim: usize, eps: f64) -> Result<Self> {
         Ok(Self {
             norm: RmsNorm::load(vb.pp("norm"), dim, eps)?,
             mlp: SwiGlu::load(vb.pp("mlp"), dim, dim)?,
-            modulation: candle_nn::linear(cond_dim, dim * 3, vb.pp("modulation"))?,
+            modulation: vb.pp("modulation").qlinear(cond_dim, dim * 3, true)?,
         })
     }
 
@@ -51,10 +51,10 @@ impl DurationSwiGluBlock {
 
 /// Irodori v3 duration predictor (`token_sum_adarn_zero_no_aux`).
 pub struct DurationPredictor {
-    token_input_proj: Linear,
+    token_input_proj: QLinear,
     token_blocks: Vec<DurationSwiGluBlock>,
     token_out_norm: RmsNorm,
-    token_out_proj: Linear,
+    token_out_proj: QLinear,
     null_speaker: Tensor,
     speaker_dim: usize,
 }
@@ -62,7 +62,7 @@ pub struct DurationPredictor {
 impl DurationPredictor {
     /// Load `duration_predictor.*` from the v3 DiT safetensors. Loading succeeds only if every
     /// tensor's shape matches `cfg` — so a successful load is itself a structural check.
-    pub fn load(vb: VarBuilder, cfg: &DitConfig) -> Result<Self> {
+    pub fn load(vb: Vb, cfg: &DitConfig) -> Result<Self> {
         let hidden = cfg.duration_hidden_dim;
         let token_blocks = (0..cfg.duration_layers)
             .map(|i| {
@@ -75,10 +75,10 @@ impl DurationPredictor {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
-            token_input_proj: candle_nn::linear(cfg.text_dim, hidden, vb.pp("token_input_proj"))?,
+            token_input_proj: vb.pp("token_input_proj").qlinear(cfg.text_dim, hidden, true)?,
             token_blocks,
             token_out_norm: RmsNorm::load(vb.pp("token_out_norm"), hidden, cfg.norm_eps)?,
-            token_out_proj: candle_nn::linear(hidden, 1, vb.pp("token_out_proj"))?,
+            token_out_proj: vb.pp("token_out_proj").qlinear(hidden, 1, true)?,
             null_speaker: vb.get(cfg.speaker_dim, "null_speaker")?,
             speaker_dim: cfg.speaker_dim,
         })

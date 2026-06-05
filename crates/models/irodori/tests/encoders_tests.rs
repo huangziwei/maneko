@@ -28,7 +28,7 @@ fn encoders_match_golden() -> anyhow::Result<()> {
 
     let dit_path = hf_file(DIT_REPO, "model.safetensors")?;
     let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[dit_path], DType::F32, &dev)? };
-    let enc = Encoders::load(vb, &DitConfig::v2(), 4096)?;
+    let enc = Encoders::load(tts_core::Vb::Full(vb), &DitConfig::v2(), 4096)?;
 
     let input_ids = golden.get("input_ids").unwrap().clone(); // (1,S) u32
     let text_mask = golden.get("text_mask").unwrap().clone(); // (1,S) f32

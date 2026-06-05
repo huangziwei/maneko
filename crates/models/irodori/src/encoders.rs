@@ -9,8 +9,8 @@
 use crate::blocks::{additive_key_mask, RmsNorm, TextBlock};
 use crate::config::DitConfig;
 use candle_core::{Result, Tensor};
-use candle_nn::{Embedding, Linear, Module, VarBuilder};
-use tts_core::RotaryEmbedding;
+use candle_nn::{Embedding, Module};
+use tts_core::{QLinear, RotaryEmbedding, Vb};
 
 /// Run blocks with mask-zeroing: `x *= mask` before, after each block, and at the end.
 fn run_masked(
@@ -36,9 +36,14 @@ struct TextEncoder {
 }
 
 impl TextEncoder {
-    fn load(vb: VarBuilder, cfg: &DitConfig) -> Result<Self> {
+    fn load(vb: Vb, cfg: &DitConfig) -> Result<Self> {
         let mlp_hidden = (cfg.text_dim as f64 * cfg.text_mlp_ratio) as usize;
-        let embedding = candle_nn::embedding(cfg.text_vocab_size, cfg.text_dim, vb.pp("text_embedding"))?;
+        // Embedding weight isn't quantized; Vb::get fetches it (dequantizing if ever stored q).
+        let embedding = candle_nn::Embedding::new(
+            vb.pp("text_embedding")
+                .get((cfg.text_vocab_size, cfg.text_dim), "weight")?,
+            cfg.text_dim,
+        );
         let blocks = (0..cfg.text_layers)
             .map(|i| {
                 TextBlock::load(
@@ -60,14 +65,16 @@ impl TextEncoder {
 }
 
 struct ReferenceLatentEncoder {
-    in_proj: Linear,
+    in_proj: QLinear,
     blocks: Vec<TextBlock>,
 }
 
 impl ReferenceLatentEncoder {
-    fn load(vb: VarBuilder, cfg: &DitConfig) -> Result<Self> {
+    fn load(vb: Vb, cfg: &DitConfig) -> Result<Self> {
         let mlp_hidden = (cfg.speaker_dim as f64 * cfg.speaker_mlp_ratio) as usize;
-        let in_proj = candle_nn::linear(cfg.speaker_in_dim(), cfg.speaker_dim, vb.pp("in_proj"))?;
+        let in_proj = vb
+            .pp("in_proj")
+            .qlinear(cfg.speaker_in_dim(), cfg.speaker_dim, true)?;
         let blocks = (0..cfg.speaker_layers)
             .map(|i| {
                 TextBlock::load(
@@ -98,9 +105,9 @@ pub struct Encoders {
 }
 
 impl Encoders {
-    /// Load from a DiT [`VarBuilder`] (root, i.e. keys `text_encoder.*`, `speaker_encoder.*`,
+    /// Load from a DiT [`Vb`] (root, i.e. keys `text_encoder.*`, `speaker_encoder.*`,
     /// `text_norm.*`, `speaker_norm.*`). `rope_max_seq` bounds the RoPE table (head_dim 64).
-    pub fn load(vb: VarBuilder, cfg: &DitConfig, rope_max_seq: usize) -> Result<Self> {
+    pub fn load(vb: Vb, cfg: &DitConfig, rope_max_seq: usize) -> Result<Self> {
         let rope = RotaryEmbedding::new(cfg.head_dim(), rope_max_seq, 10000.0, vb.device())?;
         Ok(Self {
             text_encoder: TextEncoder::load(vb.pp("text_encoder"), cfg)?,
