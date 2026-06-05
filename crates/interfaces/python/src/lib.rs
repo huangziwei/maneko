@@ -2,16 +2,17 @@
 //!
 //! ```python
 //! import maneko
-//! p = maneko.Pocket()
-//! audio = p.generate("Hello world.", language="english_2026-04")  # list[float], 24 kHz
+//! p = maneko.Pocket()                 # device="cpu" (default) or "metal" (wheel built --features metal)
+//! audio = p.generate("Hello world.", language="english_2026-04", voice="alba")  # list[float], 24 kHz
 //! maneko.save_wav("out.wav", audio, p.sample_rate("english_2026-04"))
 //!
-//! i = maneko.Irodori()
-//! jp = i.generate("こんにちは。", voice="ref.wav", seconds=4, steps=40)  # 48 kHz
+//! i = maneko.Irodori(device="metal")  # GPU; default "cpu"
+//! jp = i.generate("こんにちは。", voice="ref.wav")   # 48 kHz, steps=8 default, auto-duration
 //! maneko.save_wav("jp.wav", jp, i.sample_rate)
 //! ```
 //!
-//! Weights resolve from `HF_HOME` — point it at the cache holding that engine's repos.
+//! Weights resolve from `HF_HOME` (or pull from the public `zwaiwng/maneko`). Build with
+//! `--features accelerate,metal` for one wheel that does fast CPU **and** GPU (pick via `device=`).
 
 use candle_core::{Device, Tensor};
 use pyo3::prelude::*;
@@ -24,6 +25,25 @@ fn flatten_audio(t: Tensor) -> PyResult<Vec<f32>> {
     t.flatten_all().and_then(|t| t.to_vec1::<f32>()).map_err(rt_err)
 }
 
+/// Map a device name to a candle `Device`. `"metal"` requires a wheel built `--features metal`
+/// (mirrors the CLI's `--metal`). Compute stays on this device; only WAV I/O is CPU.
+fn select_device(name: &str) -> PyResult<Device> {
+    match name {
+        "cpu" => Ok(Device::Cpu),
+        "metal" => {
+            #[cfg(feature = "metal")]
+            {
+                Device::new_metal(0).map_err(rt_err)
+            }
+            #[cfg(not(feature = "metal"))]
+            {
+                Err(rt_err("device=\"metal\" requires a wheel built with --features metal"))
+            }
+        }
+        other => Err(rt_err(format!("unknown device {other:?} (expected \"cpu\" or \"metal\")"))),
+    }
+}
+
 /// pocket-tts: multilingual (en/de/es/fr/it/pt), 24 kHz. Loads/caches one model per language.
 #[pyclass]
 struct Pocket {
@@ -32,9 +52,11 @@ struct Pocket {
 
 #[pymethods]
 impl Pocket {
+    /// `device` is `"cpu"` (default) or `"metal"` (requires a wheel built `--features metal`).
     #[new]
-    fn new() -> Self {
-        Self { engine: pocket::Engine::new(Device::Cpu) }
+    #[pyo3(signature = (device="cpu"))]
+    fn new(device: &str) -> PyResult<Self> {
+        Ok(Self { engine: pocket::Engine::new(select_device(device)?) })
     }
 
     /// Generate speech → mono `list[float]` at 24 kHz.
@@ -61,9 +83,12 @@ struct Irodori {
 
 #[pymethods]
 impl Irodori {
+    /// `device` is `"cpu"` (default) or `"metal"` (requires a wheel built `--features metal`).
     #[new]
-    fn new() -> PyResult<Self> {
-        Ok(Self { inner: irodori::Irodori::from_hf(&Device::Cpu).map_err(rt_err)? })
+    #[pyo3(signature = (device="cpu"))]
+    fn new(device: &str) -> PyResult<Self> {
+        let dev = select_device(device)?;
+        Ok(Self { inner: irodori::Irodori::from_hf(&dev).map_err(rt_err)? })
     }
 
     /// Generate Japanese speech → mono `list[float]` at 48 kHz.

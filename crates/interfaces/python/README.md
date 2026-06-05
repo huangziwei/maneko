@@ -13,22 +13,27 @@ Needs [Rust](https://www.rust-lang.org/) and [maturin](https://github.com/PyO3/m
 ```bash
 pip install maturin
 # from crates/interfaces/python, inside a venv:
-maturin develop --features accelerate     # or --features metal on Apple GPU
+maturin develop --features accelerate,metal   # dev install: fast CPU + Apple GPU
+# …or a distributable wheel:
+maturin build --release --features accelerate,metal
 ```
+
+`accelerate` = Apple CPU BLAS, `metal` = Apple GPU, `mkl` = Intel CPU BLAS. Build both
+`accelerate,metal` for one wheel that does fast CPU **and** GPU, selected at runtime via `device=`.
 
 ## Use
 
 ```python
 import maneko
 
-# pocket-tts (multilingual, 24 kHz)
+# pocket-tts (multilingual, 24 kHz). device="cpu" (default) or "metal".
 p = maneko.Pocket()
 audio = p.generate("Hello world.", language="german", voice="nathan.wav")
 maneko.save_wav("out.wav", audio, p.sample_rate("german"))
 
-# Irodori (Japanese, 48 kHz, voice cloning)
-i = maneko.Irodori()
-jp = i.generate("こんにちは。", voice="ref.wav", seconds=4, steps=8)
+# Irodori (Japanese, 48 kHz, voice cloning). steps=8 default; duration auto-predicted.
+i = maneko.Irodori(device="metal")   # GPU; omit for CPU
+jp = i.generate("こんにちは。", voice="ref.wav")
 maneko.save_wav("jp.wav", jp, i.sample_rate)
 ```
 
