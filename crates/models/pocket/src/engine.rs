@@ -152,11 +152,16 @@ impl Engine {
 
     /// Resolve `voice_spec` against `language`'s model, caching the result by `(voice, language)`.
     ///
-    /// `None` defaults to the `alba` stock voice. Subsequent calls with the same `(spec, language)`
-    /// return a clone of the cached voice-state (cheap — candle tensors are reference-counted).
+    /// `voice_spec` is required — `None` is an error (pocket has no default voice). Subsequent calls
+    /// with the same `(spec, language)` return a clone of the cached voice-state (cheap — candle
+    /// tensors are reference-counted).
     pub fn voice_state(&mut self, language: &str, voice_spec: Option<&str>) -> Result<ModelState> {
-        // `None` and `Some("alba")` must hit the same cache slot.
-        let spec = voice_spec.unwrap_or("alba");
+        let spec = voice_spec.ok_or_else(|| {
+            anyhow::anyhow!(
+                "pocket: no default voice — pass a voice (a predefined name like `alba`, a \
+                 .wav/.safetensors path, an hf:// URL, or base64 WAV)"
+            )
+        })?;
         let key = (voice_cache_key(spec), language.to_string());
 
         if let Some(state) = self.voice_states.get(&key) {
@@ -172,7 +177,8 @@ impl Engine {
     /// Generate audio for `text` in `language` with `voice_spec`, routing to the cached model.
     ///
     /// `voice_spec` accepts anything [`crate::voice`] understands: a predefined name (`alba`, …),
-    /// a `.wav`/`.safetensors` path, an `hf://` URL, or base64 WAV. `None` defaults to `alba`.
+    /// a `.wav`/`.safetensors` path, an `hf://` URL, or base64 WAV. `None` is an error — pocket has
+    /// no default voice.
     pub fn generate(
         &mut self,
         text: &str,

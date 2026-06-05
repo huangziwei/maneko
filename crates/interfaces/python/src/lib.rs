@@ -40,7 +40,7 @@ impl Pocket {
     /// Generate speech → mono `list[float]` at 24 kHz.
     ///
     /// `language` is a config stem (`english_2026-04`, `german`, `french_24l`, …).
-    /// `voice` is a predefined name / `.wav` / `.safetensors` / `hf://` / base64 (default: stock).
+    /// `voice` is a predefined name / `.wav` / `.safetensors` / `hf://` / base64 (required; `None` errors).
     #[pyo3(signature = (text, language="english_2026-04", voice=None))]
     fn generate(&mut self, text: &str, language: &str, voice: Option<&str>) -> PyResult<Vec<f32>> {
         let audio = self.engine.generate(text, language, voice).map_err(rt_err)?;

@@ -130,8 +130,8 @@ fn hash_str(s: &str) -> u64 {
 
 /// Resolve an optional voice spec to a [`ModelState`] against `model`.
 ///
-/// `None` defaults to the `alba` stock voice. `language` (the model's config stem) is used only
-/// for predefined voices, whose embeddings are per-language in v2.
+/// `voice_spec` is required — `None` is an error (pocket has no default voice). `language` (the
+/// model's config stem) is used only for predefined voices, whose embeddings are per-language in v2.
 pub fn resolve_voice(
     model: &TTSModel,
     voice_spec: Option<&str>,
@@ -139,7 +139,10 @@ pub fn resolve_voice(
 ) -> Result<ModelState> {
     match voice_spec {
         Some(spec) => resolve_voice_spec(model, spec, language),
-        None => resolve_predefined_voice(model, "alba", language),
+        None => anyhow::bail!(
+            "pocket: no default voice — pass a voice (a predefined name like `alba`, a \
+             .wav/.safetensors path, an hf:// URL, or base64 WAV)"
+        ),
     }
 }
 

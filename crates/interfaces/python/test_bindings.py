@@ -20,7 +20,7 @@ def main():
     if which == "pocket":
         p = maneko.Pocket()
         sr = p.sample_rate("english_2026-04")
-        audio = p.generate("Hello from maneko.", language="english_2026-04")
+        audio = p.generate("Hello from maneko.", language="english_2026-04", voice="alba")
         maneko.save_wav("maneko_pocket.py.wav", audio, sr)
         print(f"pocket: {len(audio)} samples @ {sr} Hz -> maneko_pocket.py.wav")
     elif which == "irodori":
