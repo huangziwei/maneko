@@ -13,7 +13,9 @@
 use crate::dit::IrodoriDiT;
 use candle_core::{DType, Result, Tensor};
 
-/// Sampler settings (defaults match the v2 `config.json` `sampler` block).
+/// Sampler settings. CFG scales/thresholds match the v2 `config.json` `sampler` block; `num_steps`
+/// defaults to maneko's v3-validated **8** (the duration predictor sizes the clip, so 8 holds
+/// intelligibility on the Whisper round-trip; raise for more prosody fidelity on long-form).
 #[derive(Debug, Clone)]
 pub struct SamplerConfig {
     pub num_steps: usize,
@@ -26,7 +28,7 @@ pub struct SamplerConfig {
 impl Default for SamplerConfig {
     fn default() -> Self {
         Self {
-            num_steps: 40,
+            num_steps: 8,
             cfg_scale_text: 3.0,
             cfg_scale_speaker: 5.0,
             cfg_min_t: 0.5,

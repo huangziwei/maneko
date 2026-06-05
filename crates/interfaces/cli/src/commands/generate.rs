@@ -51,9 +51,14 @@ pub struct GenerateArgs {
     #[arg(long)]
     pub seconds: Option<f64>,
 
-    /// [irodori] Diffusion sampling steps (more = better quality, slower).
-    #[arg(long, default_value_t = 40)]
+    /// [irodori] Diffusion sampling steps. v3 holds intelligibility down to ~8 (its duration
+    /// predictor sizes each clip); more = better prosody/fidelity, slower. 4 transcribes but sounds rough.
+    #[arg(long, default_value_t = 8)]
     pub steps: usize,
+
+    /// [irodori] Load the DiT from a local q8 GGUF (Vb::from_gguf) instead of the f32 HF weights.
+    #[arg(long)]
+    pub gguf: Option<PathBuf>,
 
     /// [pocket] Sampling temperature.
     #[arg(long, default_value_t = 0.7)]
@@ -151,7 +156,10 @@ fn generate_pocket(args: &GenerateArgs, device: Device) -> Result<(Tensor, usize
 
 /// Irodori via [`irodori::Irodori`].
 fn generate_irodori(args: &GenerateArgs, device: Device) -> Result<(Tensor, usize)> {
-    let iro = irodori::Irodori::from_hf(&device)?;
+    let iro = match &args.gguf {
+        Some(path) => irodori::Irodori::from_gguf(&device, path)?,
+        None => irodori::Irodori::from_hf(&device)?,
+    };
     let opts = irodori::GenerateOptions {
         seconds: args.seconds,
         sampler: irodori::SamplerConfig {

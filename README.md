@@ -56,7 +56,7 @@ HF_HOME=$PWD/.cache/huggingface \
 # Irodori v3 (Japanese, voice cloning) — duration is auto-predicted; omit --seconds, or pass it to override
 HF_HOME=$PWD/.cache/huggingface \
   cargo run --release --features accelerate -p tts-cli -- \
-  generate --engine irodori --voice voices/ja/ref.wav --steps 40 -o ja.wav --text "こんにちは。"
+  generate --engine irodori --voice voices/ja/ref.wav --steps 8 -o ja.wav --text "こんにちは。"
 ```
 
 **Python** (`maneko`): build with `maturin develop --features accelerate` (in `crates/interfaces/python`), then:
@@ -67,7 +67,7 @@ p = maneko.Pocket()
 maneko.save_wav("out.wav", p.generate("Hello.", language="english_2026-04"), p.sample_rate("english_2026-04"))
 
 i = maneko.Irodori()
-maneko.save_wav("ja.wav", i.generate("こんにちは。", voice="ref.wav", seconds=4, steps=40), i.sample_rate)
+maneko.save_wav("ja.wav", i.generate("こんにちは。", voice="ref.wav", seconds=4, steps=8), i.sample_rate)
 ```
 
 **Rust**: depend on `pocket` / `irodori`; the frozen entry points are `pocket::Engine`

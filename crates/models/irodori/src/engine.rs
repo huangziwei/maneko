@@ -83,10 +83,23 @@ impl Irodori {
         Self::load_repo(device, DIT_REPO_V2, DitConfig::v2())
     }
 
+    /// Load a **q8 GGUF** DiT (v3): the DiT's Linear weights are Q8_0 via `Vb::from_gguf`; the
+    /// DACVAE and llm-jp tokenizer stay full precision. ~4× smaller DiT than f32.
+    pub fn from_gguf(device: &Device, gguf_path: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
+        let vb = tts_core::Vb::from_gguf(gguf_path, device)?;
+        Self::from_dit_vb(device, vb, DitConfig::v3())
+    }
+
     fn load_repo(device: &Device, repo: &str, cfg: DitConfig) -> anyhow::Result<Self> {
         let dit_path = hf_file(repo, "model.safetensors")?;
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[dit_path], DType::F32, device)? };
-        let dit = IrodoriDiT::load(tts_core::Vb::Full(vb), cfg, 8192)?;
+        Self::from_dit_vb(device, tts_core::Vb::Full(vb), cfg)
+    }
+
+    /// Assemble the engine from a loaded DiT weight source (f32 `Vb::Full` or q8 `Vb::Quant`) plus
+    /// the full-precision DACVAE and the llm-jp tokenizer (shared by v2/v3).
+    fn from_dit_vb(device: &Device, dit_vb: tts_core::Vb, cfg: DitConfig) -> anyhow::Result<Self> {
+        let dit = IrodoriDiT::load(dit_vb, cfg, 8192)?;
         let dacvae = Dacvae::from_hf(device)?;
         let tokenizer = IrodoriTokenizer::v2(device)?; // llm-jp tokenizer is shared by v2 and v3
         Ok(Self { dit, dacvae, tokenizer, device: device.clone() })

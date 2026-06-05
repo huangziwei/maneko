@@ -70,7 +70,7 @@ impl Irodori {
     ///
     /// `voice` is a reference `.wav` to clone (default: none). `seconds` sets the duration
     /// (default: model fallback, trimmed to silence). `steps` is the diffusion step count.
-    #[pyo3(signature = (text, voice=None, seconds=None, steps=40))]
+    #[pyo3(signature = (text, voice=None, seconds=None, steps=8))]
     fn generate(
         &self,
         text: &str,

@@ -28,7 +28,7 @@ maneko.save_wav("out.wav", audio, p.sample_rate("german"))
 
 # Irodori (Japanese, 48 kHz, voice cloning)
 i = maneko.Irodori()
-jp = i.generate("こんにちは。", voice="ref.wav", seconds=4, steps=40)
+jp = i.generate("こんにちは。", voice="ref.wav", seconds=4, steps=8)
 maneko.save_wav("jp.wav", jp, i.sample_rate)
 ```
 
