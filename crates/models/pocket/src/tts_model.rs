@@ -1421,11 +1421,10 @@ pub fn estimate_frames_after_eos(text: &str) -> usize {
     }
 }
 
-/// Build a helpful error when a voice safetensors lacks an `audio_prompt` tensor.
-///
-/// Predefined voices ship as a precomputed **model_state** (a KV cache: `…/cache` + `…/offset`),
-/// which this engine can't yet import — its attention uses a different (circular) KV layout than
-/// the saved (linear) one. Point the user at the working clone path.
+/// Build a helpful error when a voice safetensors has neither an `audio_prompt` latent nor an
+/// importable `model_state` KV-cache. Precomputed model_state voices *are* imported now (see
+/// `get_voice_state_from_model_state`); this fires only when a file looks model-state-ish but lacks
+/// the `transformer.layers.*.self_attn/cache` tensors to import — so point the user at the clone path.
 fn audio_prompt_missing_error(
     tensors: &std::collections::HashMap<String, Tensor>,
 ) -> anyhow::Error {

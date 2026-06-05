@@ -64,7 +64,7 @@ HF_HOME=$PWD/.cache/huggingface \
 ```python
 import maneko
 p = maneko.Pocket()
-maneko.save_wav("out.wav", p.generate("Hello.", language="b6369a24"), p.sample_rate("b6369a24"))
+maneko.save_wav("out.wav", p.generate("Hello.", language="english_2026-04"), p.sample_rate("english_2026-04"))
 
 i = maneko.Irodori()
 maneko.save_wav("ja.wav", i.generate("こんにちは。", voice="ref.wav", seconds=4, steps=40), i.sample_rate)
