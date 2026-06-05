@@ -1,4 +1,4 @@
-//! Quantization-aware weight loading for pocket-tts.
+//! Quantization-aware weight loading shared by maneko's TTS engines (pocket + irodori).
 //!
 //! Two weight sources sit behind one [`Vb`] enum so the model-construction code is written once:
 //!
