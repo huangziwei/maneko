@@ -2,7 +2,6 @@
 
 # f32 source: hf://kyutai/pocket-tts/languages/english_2026-04/model.safetensors@19f95fe2df36e79fbd9f10008595cc4c977a0fcc
 weights_path: hf://zwaiwng/maneko/pocket-tts/languages/english_2026-04/model.q8.gguf@6344b7d1f21e7281910b81017982f28ad4fd6149
-weights_path_without_voice_cloning: hf://kyutai/pocket-tts-without-voice-cloning/languages/english_2026-04/model.safetensors@d29db7978e464fb90cb3359ee0c69a273b9142cc
 
 
 flow_lm:
@@ -21,7 +20,7 @@ flow_lm:
     dim: 1024
     n_bins: 4000
     tokenizer: sentencepiece
-    tokenizer_path: hf://kyutai/pocket-tts-without-voice-cloning/languages/english_2026-04/tokenizer.model@d29db7978e464fb90cb3359ee0c69a273b9142cc
+    tokenizer_path: hf://zwaiwng/maneko/pocket-tts/languages/english_2026-04/tokenizer.model@f877a13aab7490b3a01ff73242db528aed5110dd
   #weights_path: final.safetensors
 
 mimi:

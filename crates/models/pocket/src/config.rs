@@ -112,8 +112,6 @@ pub struct Config {
     pub mimi: MimiConfig,
     #[serde(default)]
     pub weights_path: Option<String>,
-    #[serde(default)]
-    pub weights_path_without_voice_cloning: Option<String>,
     /// v2 text-preprocess flags (top-level in the YAML). All default off / none for v1.
     #[serde(default)]
     pub remove_semicolons: bool,
