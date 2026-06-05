@@ -35,6 +35,12 @@ maneko.save_wav("out.wav", audio, p.sample_rate("german"))
 i = maneko.Irodori(device="metal")   # GPU; omit for CPU
 jp = i.generate("こんにちは。", voice="ref.wav")
 maneko.save_wav("jp.wav", jp, i.sample_rate)
+
+# Book narration: encode the narrator ONCE, reuse across chunks
+# (skips the per-call voice encode; keeps timbre consistent).
+ref = i.encode_ref("ref.wav")
+for k, chunk in enumerate(chunks):
+    maneko.save_wav(f"{k}.wav", i.generate_with_ref(chunk, ref), i.sample_rate)
 ```
 
 `generate(...)` returns a mono `list[float]`. Weights resolve from `HF_HOME` — point it at the

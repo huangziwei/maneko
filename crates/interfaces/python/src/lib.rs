@@ -6,8 +6,10 @@
 //! audio = p.generate("Hello world.", language="english_2026-04", voice="alba")  # list[float], 24 kHz
 //! maneko.save_wav("out.wav", audio, p.sample_rate("english_2026-04"))
 //!
-//! i = maneko.Irodori(device="metal")  # GPU; default "cpu"
-//! jp = i.generate("こんにちは。", voice="ref.wav")   # 48 kHz, steps=8 default, auto-duration
+//! i = maneko.Irodori(device="metal")            # GPU; default "cpu"
+//! jp = i.generate("こんにちは。", voice="ref.wav")  # one-shot (encodes the ref each call)
+//! ref = i.encode_ref("ref.wav")                 # …or encode once + reuse across a book:
+//! jp = i.generate_with_ref("こんにちは。", ref)     # skips the per-call DACVAE-encode
 //! maneko.save_wav("jp.wav", jp, i.sample_rate)
 //! ```
 //!
@@ -41,6 +43,15 @@ fn select_device(name: &str) -> PyResult<Device> {
             }
         }
         other => Err(rt_err(format!("unknown device {other:?} (expected \"cpu\" or \"metal\")"))),
+    }
+}
+
+/// Irodori generate options from the Python kwargs (shared by `generate` / `generate_with_ref`).
+fn gen_opts(seconds: Option<f64>, steps: usize) -> irodori::GenerateOptions {
+    irodori::GenerateOptions {
+        seconds,
+        sampler: irodori::SamplerConfig { num_steps: steps, ..irodori::SamplerConfig::default() },
+        ..Default::default()
     }
 }
 
@@ -81,6 +92,14 @@ struct Irodori {
     inner: irodori::Irodori,
 }
 
+/// A reference voice encoded once (its DACVAE latent) — reuse across many clips in one voice via
+/// `Irodori.generate_with_ref`. For a book (one narrator, many chunks) this skips the per-call
+/// DACVAE-encode. Obtain it from `Irodori.encode_ref(...)`; not constructible directly.
+#[pyclass]
+struct RefVoice {
+    inner: irodori::RefVoice,
+}
+
 #[pymethods]
 impl Irodori {
     /// `device` is `"cpu"` (default) or `"metal"` (requires a wheel built `--features metal`).
@@ -103,12 +122,32 @@ impl Irodori {
         seconds: Option<f64>,
         steps: usize,
     ) -> PyResult<Vec<f32>> {
-        let opts = irodori::GenerateOptions {
-            seconds,
-            sampler: irodori::SamplerConfig { num_steps: steps, ..irodori::SamplerConfig::default() },
-            ..Default::default()
-        };
-        let audio = self.inner.generate(text, voice, &opts).map_err(rt_err)?;
+        let audio = self.inner.generate(text, voice, &gen_opts(seconds, steps)).map_err(rt_err)?;
+        flatten_audio(audio)
+    }
+
+    /// Encode a reference voice **once** → a [`RefVoice`] to reuse across clips (one narrator, many
+    /// chunks) via `generate_with_ref`, skipping the per-call DACVAE-encode. `voice` is a reference
+    /// `.wav` (or `None` for the speaker-less default).
+    #[pyo3(signature = (voice=None))]
+    fn encode_ref(&self, voice: Option<&str>) -> PyResult<RefVoice> {
+        Ok(RefVoice { inner: self.inner.encode_ref(voice).map_err(rt_err)? })
+    }
+
+    /// Generate using a pre-encoded [`RefVoice`] (from `encode_ref`) — like `generate`, but reuses the
+    /// encoded voice instead of re-encoding it each call. `seconds`/`steps` as in `generate`.
+    #[pyo3(signature = (text, voice, seconds=None, steps=8))]
+    fn generate_with_ref(
+        &self,
+        text: &str,
+        voice: &RefVoice,
+        seconds: Option<f64>,
+        steps: usize,
+    ) -> PyResult<Vec<f32>> {
+        let audio = self
+            .inner
+            .generate_with_ref(text, &voice.inner, &gen_opts(seconds, steps))
+            .map_err(rt_err)?;
         flatten_audio(audio)
     }
 
@@ -131,6 +170,7 @@ fn save_wav(path: &str, samples: Vec<f32>, sample_rate: u32) -> PyResult<()> {
 fn maneko(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Pocket>()?;
     m.add_class::<Irodori>()?;
+    m.add_class::<RefVoice>()?;
     m.add_function(wrap_pyfunction!(save_wav, m)?)?;
     Ok(())
 }
