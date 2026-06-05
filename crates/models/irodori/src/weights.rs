@@ -65,3 +65,15 @@ pub fn hf_file(repo: &str, file: &str) -> anyhow::Result<std::path::PathBuf> {
     let path = api.model(repo.to_string()).get(file)?;
     Ok(path)
 }
+
+/// Like [`hf_file`] but pinned to an exact commit `rev` (reproducible) — for maneko's own published
+/// weights repo. An already-cached revision resolves without a network call.
+pub fn hf_file_rev(repo: &str, file: &str, rev: &str) -> anyhow::Result<std::path::PathBuf> {
+    use hf_hub::api::sync::ApiBuilder;
+    use hf_hub::{Repo, RepoType};
+    let api = ApiBuilder::from_env().build()?;
+    let path = api
+        .repo(Repo::with_revision(repo.to_string(), RepoType::Model, rev.to_string()))
+        .get(file)?;
+    Ok(path)
+}

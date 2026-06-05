@@ -293,6 +293,17 @@ impl Dacvae {
         Ok(Self::load_dtype(&w, DacvaeConfig::v2(), dtype)?)
     }
 
+    /// Load the DACVAE from a flat **safetensors** state-dict (maneko's self-contained f16 codec),
+    /// with an explicit conv dtype — same fold/cast path as [`from_hf_dtype`], different container.
+    pub fn from_safetensors_dtype(
+        path: impl AsRef<std::path::Path>,
+        device: &candle_core::Device,
+        dtype: DType,
+    ) -> anyhow::Result<Self> {
+        let w = Weights::from_safetensors(path, device)?;
+        Ok(Self::load_dtype(&w, DacvaeConfig::v2(), dtype)?)
+    }
+
     /// Decode a VAE latent `(B, codebook_dim, T)` → waveform `(B, 1, T·hop)` in `[-1, 1]`,
     /// in a single pass. For long sequences prefer [`decode_chunked`](Self::decode_chunked) to
     /// bound the conv-transpose intermediates' memory.

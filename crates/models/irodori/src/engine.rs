@@ -13,8 +13,11 @@ use crate::{Dacvae, IrodoriDiT, IrodoriTokenizer};
 use candle_core::{DType, Device, Result, Tensor};
 use candle_nn::VarBuilder;
 
-const DIT_REPO_V2: &str = "Aratako/Irodori-TTS-500M-v2";
-const DIT_REPO_V3: &str = "Aratako/Irodori-TTS-500M-v3";
+const DIT_REPO_V2: &str = "Aratako/Irodori-TTS-500M-v2"; // upstream f32, for the v2 parity goldens
+/// maneko's own published bundle (q8 DiT + f16 DACVAE + tokenizer) — the self-contained shipping
+/// path. Pinned; see the model card for attribution (MIT/Apache derivatives).
+const MANEKO_REPO: &str = "zwaiwng/maneko";
+const MANEKO_IRODORI_REV: &str = "722e41bb8955485656e2fa80218f1219138b3f97";
 
 /// Detect trailing silence in a generated latent `(T, D)`: the first window (size 20) whose values
 /// have `std < 0.05` and `|mean| < 0.1`, else `T`. Verbatim port of `_find_silence_point`.
@@ -70,11 +73,14 @@ pub struct Irodori {
 }
 
 impl Irodori {
-    /// Load the **v3** model (DiT + integrated Duration Predictor) — the default Irodori. With v3,
-    /// `generate` predicts the output length from text + speaker when `seconds` is `None` (instead
-    /// of the v2 30 s fallback).
+    /// Load the default Irodori — maneko's **self-contained v3 bundle** (q8 DiT + f16 DACVAE +
+    /// tokenizer) from `zwaiwng/maneko/irodori-tts`, with no third-party repo at runtime. v3's
+    /// duration predictor auto-lengths each clip (`generate` with `seconds = None`).
     pub fn from_hf(device: &Device) -> anyhow::Result<Self> {
-        Self::load_repo(device, DIT_REPO_V3, DitConfig::v3())
+        let dit_path =
+            crate::weights::hf_file_rev(MANEKO_REPO, "irodori-tts/model.q8.gguf", MANEKO_IRODORI_REV)?;
+        let dit_vb = tts_core::Vb::from_gguf(dit_path, device)?;
+        Self::from_dit_vb_maneko(device, dit_vb, DitConfig::v3())
     }
 
     /// Load the v2 model (no duration predictor — `generate` uses `seconds`, else the 30 s
@@ -83,11 +89,11 @@ impl Irodori {
         Self::load_repo(device, DIT_REPO_V2, DitConfig::v2())
     }
 
-    /// Load a **q8 GGUF** DiT (v3): the DiT's Linear weights are Q8_0 via `Vb::from_gguf`; the
-    /// DACVAE and llm-jp tokenizer stay full precision. ~4× smaller DiT than f32.
+    /// Load a v3 model from a **local q8 GGUF** DiT (Linear weights Q8_0), paired with maneko's own
+    /// f16 DACVAE + tokenizer — self-contained. ~4× smaller DiT than f32.
     pub fn from_gguf(device: &Device, gguf_path: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
         let vb = tts_core::Vb::from_gguf(gguf_path, device)?;
-        Self::from_dit_vb(device, vb, DitConfig::v3())
+        Self::from_dit_vb_maneko(device, vb, DitConfig::v3())
     }
 
     fn load_repo(device: &Device, repo: &str, cfg: DitConfig) -> anyhow::Result<Self> {
@@ -102,6 +108,19 @@ impl Irodori {
         let dit = IrodoriDiT::load(dit_vb, cfg, 8192)?;
         let dacvae = Dacvae::from_hf_dtype(device, Self::dacvae_dtype(device))?;
         let tokenizer = IrodoriTokenizer::v2(device)?; // llm-jp tokenizer is shared by v2 and v3
+        Ok(Self { dit, dacvae, tokenizer, device: device.clone() })
+    }
+
+    /// Assemble with maneko's **own self-contained codec** — f16 DACVAE + tokenizer pulled from
+    /// `zwaiwng/maneko/irodori-tts` (the shipping path; no third-party repo at runtime).
+    fn from_dit_vb_maneko(device: &Device, dit_vb: tts_core::Vb, cfg: DitConfig) -> anyhow::Result<Self> {
+        let f = |n: &str| {
+            crate::weights::hf_file_rev(MANEKO_REPO, &format!("irodori-tts/{n}"), MANEKO_IRODORI_REV)
+        };
+        let dit = IrodoriDiT::load(dit_vb, cfg, 8192)?;
+        let dacvae =
+            Dacvae::from_safetensors_dtype(f("dacvae.f16.safetensors")?, device, Self::dacvae_dtype(device))?;
+        let tokenizer = IrodoriTokenizer::load(&f("tokenizer.json")?, 1, 4, 256)?;
         Ok(Self { dit, dacvae, tokenizer, device: device.clone() })
     }
 
