@@ -10,17 +10,18 @@
 
 use crate::config::DacvaeConfig;
 use crate::weights::Weights;
-use candle_core::{Result, Tensor, D};
+use candle_core::{DType, Result, Tensor, D};
 use candle_nn::{Conv1d, Conv1dConfig, ConvTranspose1d, ConvTranspose1dConfig, Module};
 use tts_core::{fold_weight_norm, snake};
 
 /// Build a plain Conv1d from a weight-normed torch conv (`{base}.weight_g/.weight_v/.bias`).
-fn wn_conv1d(w: &Weights, base: &str, padding: usize, stride: usize, dilation: usize) -> Result<Conv1d> {
+fn wn_conv1d(w: &Weights, base: &str, padding: usize, stride: usize, dilation: usize, dtype: DType) -> Result<Conv1d> {
     let weight = fold_weight_norm(
         w.get(&format!("{base}.weight_g"))?,
         w.get(&format!("{base}.weight_v"))?,
-    )?;
-    let bias = w.get(&format!("{base}.bias"))?.clone();
+    )? // fold is f32-accumulated; cast the result to the conv dtype
+    .to_dtype(dtype)?;
+    let bias = w.get(&format!("{base}.bias"))?.to_dtype(dtype)?;
     let cfg = Conv1dConfig {
         padding,
         stride,
@@ -33,12 +34,13 @@ fn wn_conv1d(w: &Weights, base: &str, padding: usize, stride: usize, dilation: u
 
 /// Build a plain ConvTranspose1d for the `pad_mode="none"` upsample: `padding=(stride+1)/2`,
 /// `output_padding=0`, `kernel=2·stride` → exact ×stride upsample (no `_unpad` since pad_mode none).
-fn wn_convtr1d(w: &Weights, base: &str, stride: usize) -> Result<ConvTranspose1d> {
+fn wn_convtr1d(w: &Weights, base: &str, stride: usize, dtype: DType) -> Result<ConvTranspose1d> {
     let weight = fold_weight_norm(
         w.get(&format!("{base}.weight_g"))?,
         w.get(&format!("{base}.weight_v"))?,
-    )?;
-    let bias = w.get(&format!("{base}.bias"))?.clone();
+    )?
+    .to_dtype(dtype)?;
+    let bias = w.get(&format!("{base}.bias"))?.to_dtype(dtype)?;
     let cfg = ConvTranspose1dConfig {
         padding: stride.div_ceil(2),
         output_padding: 0,
@@ -69,13 +71,13 @@ struct ResidualUnit {
 
 impl ResidualUnit {
     /// `base` points at the torch `block` Sequential (sub-indices 0=Snake,1=conv k7,2=Snake,3=conv k1).
-    fn load(w: &Weights, base: &str, dilation: usize) -> Result<Self> {
+    fn load(w: &Weights, base: &str, dilation: usize, dtype: DType) -> Result<Self> {
         let pad = (7 - 1) * dilation / 2; // pad_mode="none" → 3·dilation, preserves length
         Ok(Self {
-            alpha1: w.get(&format!("{base}.0.alpha"))?.clone(),
-            conv1: wn_conv1d(w, &format!("{base}.1"), pad, 1, dilation)?,
-            alpha2: w.get(&format!("{base}.2.alpha"))?.clone(),
-            conv2: wn_conv1d(w, &format!("{base}.3"), 0, 1, 1)?,
+            alpha1: w.get(&format!("{base}.0.alpha"))?.to_dtype(dtype)?,
+            conv1: wn_conv1d(w, &format!("{base}.1"), pad, 1, dilation, dtype)?,
+            alpha2: w.get(&format!("{base}.2.alpha"))?.to_dtype(dtype)?,
+            conv2: wn_conv1d(w, &format!("{base}.3"), 0, 1, 1, dtype)?,
         })
     }
 
@@ -100,13 +102,13 @@ struct DecoderBlock {
 
 impl DecoderBlock {
     /// `base` is the torch `decoder.model.{i+1}` prefix (its `.block` holds the sub-modules).
-    fn load(w: &Weights, base: &str, stride: usize) -> Result<Self> {
+    fn load(w: &Weights, base: &str, stride: usize, dtype: DType) -> Result<Self> {
         Ok(Self {
-            alpha0: w.get(&format!("{base}.block.0.alpha"))?.clone(),
-            convt: wn_convtr1d(w, &format!("{base}.block.1"), stride)?,
-            res1: ResidualUnit::load(w, &format!("{base}.block.4.block"), 1)?,
-            res3: ResidualUnit::load(w, &format!("{base}.block.5.block"), 3)?,
-            res9: ResidualUnit::load(w, &format!("{base}.block.8.block"), 9)?,
+            alpha0: w.get(&format!("{base}.block.0.alpha"))?.to_dtype(dtype)?,
+            convt: wn_convtr1d(w, &format!("{base}.block.1"), stride, dtype)?,
+            res1: ResidualUnit::load(w, &format!("{base}.block.4.block"), 1, dtype)?,
+            res3: ResidualUnit::load(w, &format!("{base}.block.5.block"), 3, dtype)?,
+            res9: ResidualUnit::load(w, &format!("{base}.block.8.block"), 9, dtype)?,
         })
     }
 
@@ -131,14 +133,14 @@ struct EncoderBlock {
 impl EncoderBlock {
     /// `base` is the torch `encoder.block.{i+1}` prefix (its `.block` Sequential holds res×3,
     /// Snake, downsample conv at sub-indices 0,1,2,3,4).
-    fn load(w: &Weights, base: &str, stride: usize) -> Result<Self> {
+    fn load(w: &Weights, base: &str, stride: usize, dtype: DType) -> Result<Self> {
         Ok(Self {
-            res1: ResidualUnit::load(w, &format!("{base}.block.0.block"), 1)?,
-            res3: ResidualUnit::load(w, &format!("{base}.block.1.block"), 3)?,
-            res9: ResidualUnit::load(w, &format!("{base}.block.2.block"), 9)?,
-            snake: w.get(&format!("{base}.block.3.alpha"))?.clone(),
+            res1: ResidualUnit::load(w, &format!("{base}.block.0.block"), 1, dtype)?,
+            res3: ResidualUnit::load(w, &format!("{base}.block.1.block"), 3, dtype)?,
+            res9: ResidualUnit::load(w, &format!("{base}.block.2.block"), 9, dtype)?,
+            snake: w.get(&format!("{base}.block.3.alpha"))?.to_dtype(dtype)?,
             // downsample: k=2·stride, stride, padding=ceil(stride/2).
-            conv: wn_conv1d(w, &format!("{base}.block.4"), stride.div_ceil(2), stride, 1)?,
+            conv: wn_conv1d(w, &format!("{base}.block.4"), stride.div_ceil(2), stride, 1, dtype)?,
         })
     }
 
@@ -160,17 +162,17 @@ struct Encoder {
 }
 
 impl Encoder {
-    fn load(w: &Weights, cfg: &DacvaeConfig) -> Result<Self> {
-        let conv_in = wn_conv1d(w, "encoder.block.0", 3, 1, 1)?; // 1 → encoder_dim, k=7
+    fn load(w: &Weights, cfg: &DacvaeConfig, dtype: DType) -> Result<Self> {
+        let conv_in = wn_conv1d(w, "encoder.block.0", 3, 1, 1, dtype)?; // 1 → encoder_dim, k=7
         let blocks = cfg
             .encoder_rates
             .iter()
             .enumerate()
-            .map(|(i, &stride)| EncoderBlock::load(w, &format!("encoder.block.{}", i + 1), stride))
+            .map(|(i, &stride)| EncoderBlock::load(w, &format!("encoder.block.{}", i + 1), stride, dtype))
             .collect::<Result<Vec<_>>>()?;
         let n = cfg.encoder_rates.len();
-        let snake_out = w.get(&format!("encoder.block.{}.alpha", n + 1))?.clone();
-        let conv_out = wn_conv1d(w, &format!("encoder.block.{}", n + 2), 1, 1, 1)?; // →latent_dim, k=3
+        let snake_out = w.get(&format!("encoder.block.{}.alpha", n + 1))?.to_dtype(dtype)?;
+        let conv_out = wn_conv1d(w, &format!("encoder.block.{}", n + 2), 1, 1, 1, dtype)?; // →latent_dim, k=3
         Ok(Self {
             conv_in,
             blocks,
@@ -200,30 +202,38 @@ pub struct Dacvae {
     snake_out: Tensor,
     conv_out: Conv1d,
     cfg: DacvaeConfig,
+    /// Conv-stack compute dtype (F16 to run the codec in half precision; F32 default).
+    dtype: DType,
 }
 
 impl Dacvae {
     pub fn load(w: &Weights, cfg: DacvaeConfig) -> Result<Self> {
+        Self::load_dtype(w, cfg, DType::F32)
+    }
+
+    /// Load with an explicit conv-stack dtype. `F16` runs the whole codec in half precision (the
+    /// folds + Snake still accumulate in f32 internally, so only conv/storage precision changes).
+    pub fn load_dtype(w: &Weights, cfg: DacvaeConfig, dtype: DType) -> Result<Self> {
         // Encoder (ref-audio → latent) + VAE input projection (latent_dim → 2·codebook_dim, k=1).
-        let encoder = Encoder::load(w, &cfg)?;
-        let quantizer_in_proj = wn_conv1d(w, "quantizer.in_proj", 0, 1, 1)?;
+        let encoder = Encoder::load(w, &cfg, dtype)?;
+        let quantizer_in_proj = wn_conv1d(w, "quantizer.in_proj", 0, 1, 1, dtype)?;
         // codebook_dim (32) → latent_dim (1024), k=1.
-        let quantizer_out_proj = wn_conv1d(w, "quantizer.out_proj", 0, 1, 1)?;
+        let quantizer_out_proj = wn_conv1d(w, "quantizer.out_proj", 0, 1, 1, dtype)?;
         // latent_dim → decoder_dim, k=7.
-        let conv_in = wn_conv1d(w, "decoder.model.0", 3, 1, 1)?;
+        let conv_in = wn_conv1d(w, "decoder.model.0", 3, 1, 1, dtype)?;
 
         let mut blocks = Vec::with_capacity(cfg.decoder_rates.len());
         for (i, &stride) in cfg.decoder_rates.iter().enumerate() {
             // torch decoder is an nn.Sequential `model`: 0 = conv_in, 1.. = DecoderBlocks.
-            blocks.push(DecoderBlock::load(w, &format!("decoder.model.{}", i + 1), stride)?);
+            blocks.push(DecoderBlock::load(w, &format!("decoder.model.{}", i + 1), stride, dtype)?);
         }
 
         // snake_out / conv_out are shared into the (unused) watermark encoder block in the
         // checkpoint: `decoder.wm_model.encoder_block.pre.{0=Snake, 1=conv}`.
         let snake_out = w
             .get("decoder.wm_model.encoder_block.pre.0.alpha")?
-            .clone();
-        let conv_out = wn_conv1d(w, "decoder.wm_model.encoder_block.pre.1", 3, 1, 1)?;
+            .to_dtype(dtype)?;
+        let conv_out = wn_conv1d(w, "decoder.wm_model.encoder_block.pre.1", 3, 1, 1, dtype)?;
 
         Ok(Self {
             encoder,
@@ -234,6 +244,7 @@ impl Dacvae {
             snake_out,
             conv_out,
             cfg,
+            dtype,
         })
     }
 
@@ -252,11 +263,12 @@ impl Dacvae {
     /// Encode a mono waveform `(B, 1, L)` (48 kHz) to a VAE-mean latent `(B, T, codebook_dim)`,
     /// the reference latent for voice cloning. `T = ceil(L / hop_length)`.
     pub fn encode(&self, waveform: &Tensor) -> Result<Tensor> {
-        let w = self.pad_to_hop(waveform)?;
+        let w = self.pad_to_hop(waveform)?.to_dtype(self.dtype)?;
         let z = self.encoder.forward(&w)?; // (B, latent_dim, T)
         let proj = self.quantizer_in_proj.forward(&z)?; // (B, 2·codebook_dim, T)
         let mean = proj.narrow(1, 0, self.cfg.codebook_dim)?; // VAE mean = first half: (B, codebook_dim, T)
-        mean.transpose(1, 2)?.contiguous() // (B, T, codebook_dim)
+        // f32 ref-latent for the (f32) DiT speaker encoder.
+        mean.transpose(1, 2)?.contiguous()?.to_dtype(DType::F32) // (B, T, codebook_dim)
     }
 
     pub fn sample_rate(&self) -> usize {
@@ -270,23 +282,31 @@ impl Dacvae {
     /// Load the v2 Japanese DACVAE from the HF cache (`Aratako/Semantic-DACVAE-Japanese-32dim`,
     /// a torch `.pth`). Honors `HF_HOME`.
     pub fn from_hf(device: &candle_core::Device) -> anyhow::Result<Self> {
+        Self::from_hf_dtype(device, DType::F32)
+    }
+
+    /// Load the DACVAE with an explicit conv dtype. `F16` runs the codec in half precision — ~2× on
+    /// the GPU for the ref-encode and per-clip decode; on CPU candle f16 is emulated, so keep F32.
+    pub fn from_hf_dtype(device: &candle_core::Device, dtype: DType) -> anyhow::Result<Self> {
         let path = crate::weights::hf_file("Aratako/Semantic-DACVAE-Japanese-32dim", "weights.pth")?;
         let w = Weights::from_pth(&path, Some("state_dict"), device)?;
-        Ok(Self::load(&w, DacvaeConfig::v2())?)
+        Ok(Self::load_dtype(&w, DacvaeConfig::v2(), dtype)?)
     }
 
     /// Decode a VAE latent `(B, codebook_dim, T)` → waveform `(B, 1, T·hop)` in `[-1, 1]`,
     /// in a single pass. For long sequences prefer [`decode_chunked`](Self::decode_chunked) to
     /// bound the conv-transpose intermediates' memory.
     pub fn decode(&self, latent: &Tensor) -> Result<Tensor> {
-        let emb = self.quantizer_out_proj.forward(latent)?; // (B, latent_dim, T)
+        let latent = latent.to_dtype(self.dtype)?;
+        let emb = self.quantizer_out_proj.forward(&latent)?; // (B, latent_dim, T)
         let mut x = self.conv_in.forward(&emb)?; // (B, decoder_dim, T)
         for block in &self.blocks {
             x = block.forward(&x)?;
         }
         let x = snake(&x, &self.snake_out)?;
         let x = self.conv_out.forward(&x)?; // (B, 1, L)
-        x.tanh()
+        // f32 audio so decode_chunked's crossfade (f32 ramps) and the output stay f32.
+        x.tanh()?.to_dtype(DType::F32)
     }
 
     /// Decode in overlapping `chunk_size`-frame windows with a linear crossfade over `overlap`

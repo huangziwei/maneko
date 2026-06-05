@@ -97,12 +97,24 @@ impl Irodori {
     }
 
     /// Assemble the engine from a loaded DiT weight source (f32 `Vb::Full` or q8 `Vb::Quant`) plus
-    /// the full-precision DACVAE and the llm-jp tokenizer (shared by v2/v3).
+    /// the DACVAE (f16 on the GPU — see [`dacvae_dtype`](Self::dacvae_dtype)) and the llm-jp tokenizer.
     fn from_dit_vb(device: &Device, dit_vb: tts_core::Vb, cfg: DitConfig) -> anyhow::Result<Self> {
         let dit = IrodoriDiT::load(dit_vb, cfg, 8192)?;
-        let dacvae = Dacvae::from_hf(device)?;
+        let dacvae = Dacvae::from_hf_dtype(device, Self::dacvae_dtype(device))?;
         let tokenizer = IrodoriTokenizer::v2(device)?; // llm-jp tokenizer is shared by v2 and v3
         Ok(Self { dit, dacvae, tokenizer, device: device.clone() })
+    }
+
+    /// DACVAE conv dtype: F16 on the GPU (native half-precision throughput → ~2× the ref-encode and
+    /// per-clip decode); F32 on CPU (candle f16 is emulated there, no faster). Override with
+    /// `IRODORI_DACVAE=f16|f32` — e.g. to validate f16 quality on CPU via the Whisper round-trip.
+    fn dacvae_dtype(device: &Device) -> DType {
+        match std::env::var("IRODORI_DACVAE").ok().as_deref() {
+            Some("f16") => DType::F16,
+            Some("f32") => DType::F32,
+            _ if matches!(device, Device::Metal(_)) => DType::F16,
+            _ => DType::F32,
+        }
     }
 
     pub fn sample_rate(&self) -> usize {
