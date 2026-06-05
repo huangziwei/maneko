@@ -17,4 +17,6 @@ classifiers = [
 
 [tool.maturin]
 module-name = "maneko"
-features = ["pyo3/extension-module"]
+# macOS-only distribution: build fast CPU (accelerate) + GPU (metal) by default, so a from-source
+# `uv`/`pip` install (PEP 517) gets both backends — pick the device at runtime via `Irodori(device=)`.
+features = ["pyo3/extension-module", "accelerate", "metal"]
