@@ -17,6 +17,8 @@ classifiers = [
 
 [tool.maturin]
 module-name = "maneko"
-# macOS-only distribution: build fast CPU (accelerate) + GPU (metal) by default, so a from-source
-# `uv`/`pip` install (PEP 517) gets both backends — pick the device at runtime via `Irodori(device=)`.
-features = ["pyo3/extension-module", "accelerate", "metal"]
+# Default to a portable CPU build (q8 + AVX2 on x86 via .cargo/config.toml; NEON on aarch64) so a
+# plain `uv`/`pip` install works on any mac with no extra frameworks. Accelerate/Metal are opt-in:
+# on Intel they give no speedup (benchmarked: Accelerate ≈ gemm) and Accelerate pulls a framework
+# link. Apple Silicon: build `--features accelerate,metal` for AMX + GPU, pick device at runtime.
+features = ["pyo3/extension-module"]

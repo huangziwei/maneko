@@ -8,6 +8,7 @@ target/
 voices/
 out/
 dist/
+bench/
 
 # Dev scratch examples — kept on disk for local runs, never tracked.
 examples/

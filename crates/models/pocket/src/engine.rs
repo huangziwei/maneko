@@ -32,6 +32,39 @@ use std::sync::Arc;
 /// case. Each FlowLM+Mimi model is ≈225 MB+ (more for 24-layer), so raise it deliberately.
 pub const DEFAULT_CAPACITY: usize = 8;
 
+/// Size the candle CPU thread pool once, before any op runs — **x86_64 only**. pocket's
+/// autoregressive generation + gen/decode overlap saturates ~physical cores and *regresses* under
+/// SMT oversubscription (e.g. 16 logical threads on an 8-core x86 ran ~15% slower than 8), so cap
+/// to physical ≈ logical/2. Apple Silicon / other arches are left untouched (they keep their
+/// default threading and Accelerate/Metal paths). An explicit `RAYON_NUM_THREADS` always wins.
+fn init_rayon_pool() {
+    #[cfg(target_arch = "x86_64")]
+    {
+        static RAYON_INIT: std::sync::Once = std::sync::Once::new();
+        RAYON_INIT.call_once(|| {
+            if std::env::var_os("RAYON_NUM_THREADS").is_some() {
+                return;
+            }
+            let logical = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1);
+            let threads = (logical / 2).max(1);
+            // candle's matmul/conv backend (the `gemm` crate) sizes its worker pool from
+            // RAYON_NUM_THREADS (verified: the env var changes throughput; rayon's `build_global`
+            // alone does not). Set it before the first op; also size rayon's pool for direct users.
+            //
+            // SAFETY: runs once during engine construction, before any worker thread is spawned and
+            // before any op reads the environment, so there is no concurrent env access.
+            unsafe {
+                std::env::set_var("RAYON_NUM_THREADS", threads.to_string());
+            }
+            let _ = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build_global();
+        });
+    }
+}
+
 /// Generation parameters applied to every language model the engine loads.
 #[derive(Clone, Copy, Debug)]
 pub struct GenParams {
@@ -73,6 +106,7 @@ pub struct Engine {
 impl Engine {
     /// Create an engine on `device` with default generation params and [`DEFAULT_CAPACITY`].
     pub fn new(device: Device) -> Self {
+        init_rayon_pool();
         Self {
             device,
             params: GenParams::default(),

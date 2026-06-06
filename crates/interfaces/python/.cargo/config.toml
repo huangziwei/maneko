@@ -1,0 +1,17 @@
+# Build the wheel with AVX2/FMA on x86_64. candle's Q8_0 CPU kernels are compile-time
+# `target_feature`-gated (no runtime detection) and silently fall back to a ~5x slower scalar
+# path without it (and pocket's `compile_error!` guard refuses to build). maturin/uv invoke cargo
+# from this crate directory, so a config here is honored even when the workspace-root
+# `.cargo/config.toml` isn't carried into uv's isolated PEP517 build.
+#
+# String form (not an array): a user's global `~/.cargo/config.toml` may set
+# `[target.x86_64-apple-darwin].rustflags` as a string; cargo cannot merge a string with an array,
+# so we use a string — and being more specific, it cleanly overrides the global one. Portable
+# "modern x86" feature baseline (not `target-cpu=native`) so a built wheel stays runnable on other
+# x86 boxes. An explicit `RUSTFLAGS` in the environment still overrides everything here.
+# No Accelerate link: the default wheel is CPU/gemm (Accelerate is opt-in via `--features`).
+[target.x86_64-apple-darwin]
+rustflags = "-C target-feature=+avx2,+fma,+f16c"
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = "-C target-feature=+avx2,+fma,+f16c"
