@@ -1,42 +1,8 @@
-# maneko
+# maneko 真似猫
 
-**maneko** = 真似 (*mane*, "to imitate") + 猫 (*neko*, "cat") — a pun on 招き猫 (*maneki-neko*).
-One native **Rust/Candle** TTS engine hosting two voice-cloning model families, with no
-podman/MLX/torch in the runtime path:
+This project exists purely because I am too cheap to upgrade my (still working perfectly fine) Intel Macbook Pro to Apple Silicon. It's a native Rust/Candle TTS engine that can run pocket-tts v2 and irodori-tts v3 on those really dated Intel mac, slowly. 
 
-- **pocket-tts v2** — multilingual (en/fr/de/it/es/pt), 24 kHz, autoregressive (Mimi + FlowLM).
-- **Irodori v3** — Japanese, 48 kHz, flow-matching DiT + DACVAE codec, with a built-in duration
-  predictor (auto-lengths each clip; no manual `seconds` needed).
-
-One codebase runs on **Apple Silicon** (CPU / Accelerate / Metal) and **Intel** (CPU / MKL). See
-`.claude/plans/maneko.md` for the full plan and status, and `NOTICE` for attribution.
-
-## Status
-
-**Both engines generate natively, behind one frozen surface** (CLI + Python + Rust). Irodori was
-ported stage-by-stage and parity-checked against mlx-audio (≤1.3e-4 vs CPU golden tensors at every
-stage); its output is confirmed intelligible by a Whisper round-trip. pocket-tts does multilingual
-synthesis with per-language model switching and voice cloning.
-
-Irodori is **v3** (integrated duration predictor — the model predicts each clip's length from text +
-speaker). The port runs and is plausibility-checked on Intel; its MLX-golden numeric parity + Whisper
-round-trip are validated on Apple Silicon. Deferred polish: int8/quantized perf pass, pocket
-streaming in the unified CLI.
-
-## Layout
-
-```
-crates/
-  core/        (tts-core)          # shared math: ops, conv, attention, RoPE, weight-norm, audio
-  models/
-    pocket/    (pocket)            # Mimi + FlowLM + per-language Engine + voice cloning (24 kHz)
-    irodori/   (irodori)           # DiT + RF/CFG sampler + DACVAE + JP frontend (48 kHz)
-  interfaces/
-    cli/       (tts-cli, bin tts)  # `tts generate --engine pocket|irodori …`
-    python/    (maneko-py)         # PyO3 wheel — `import maneko` (Pocket + Irodori)
-ref/                               # vendored upstreams + golden-dump tools (gitignored)
-.claude/plans/maneko.md            # the living plan + status
-```
+And it turns out that only the pocket-tts is worth running and can get sub-1x real time audio output, while irodori-tts is 5~10x slower than real time. It's still a win and a good way to waste tokens.
 
 ## Usage
 
