@@ -17,11 +17,14 @@ use crate::text::MioTokenizer;
 use anyhow::Context;
 use candle_core::{Device, Tensor};
 
-/// Cap candle's CPU worker pool to physical cores on x86_64 (logical/2) before the first matmul.
-/// candle's `gemm`/BLAS backend sizes its pool from `RAYON_NUM_THREADS`; oversubscribing the
-/// hyper-threaded siblings regresses these memory-bound batch-1 matmuls (measured on an i9-9880H:
-/// 16 threads ≈ 10 tok/s vs 8 ≈ 13). An explicit `RAYON_NUM_THREADS` always wins. Mirrors pocket's
-/// `init_rayon_pool`; called from the [`Mio`] constructors (before voice-encode / generation matmuls).
+/// Cap candle's CPU worker pool on x86_64 before the first matmul. mio's decode is
+/// memory-bandwidth-bound with substantial **single-threaded** scalar work (hand-rolled attention /
+/// scan / conv) plus many tiny batch-1 q8 GEMVs, so the DRAM bandwidth saturates at a few threads
+/// and extra threads only add per-GEMV sync overhead. Measured optimum on an i9-9880H (8 cores /
+/// 16 t): **~4 threads ≈ `logical/4`** (med 0.58× / 50 tok/s); 8 is ~10 % slower, 16 worse (HT
+/// thrash). candle's `gemm` backend reads `RAYON_NUM_THREADS`; an explicit value always wins.
+/// (Contrast pocket, whose all-matmul decode prefers physical cores ≈ `logical/2`.) Called from the
+/// [`Mio`] constructors, before any voice-encode / generation matmul.
 fn init_thread_cap() {
     #[cfg(target_arch = "x86_64")]
     {
@@ -32,7 +35,7 @@ fn init_thread_cap() {
                 return;
             }
             let logical = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-            let threads = (logical / 2).max(1);
+            let threads = (logical / 4).max(2);
             // SAFETY: runs once during model construction, before candle spawns any worker thread
             // or reads the env, so there is no concurrent env access.
             unsafe {
@@ -122,18 +125,19 @@ impl Mio {
     pub fn generate_tokens_with(&self, text: &str, cfg: &GenConfig) -> anyhow::Result<Vec<i64>> {
         let ids = self.tok.encode_prompt(text)?;
         let mut sampler = Sampler::new(cfg);
-        let (mut logits, mut cache) = self.ar.prefill(&ids)?;
+        let (mut hidden, mut cache) = self.ar.prefill(&ids)?;
         let mut speech = Vec::new();
         for _ in 0..cfg.max_new {
-            let next = sampler.sample(&logits)?;
-            if MioTokenizer::is_eos(next) {
-                break;
+            // Sample over the restricted generation head (speech tokens + EOS only), then map the
+            // index back to a content index + the embed id to feed next, or stop on EOS.
+            let ri = sampler.sample(&self.ar.gen_head(&hidden)?)?;
+            match MioTokenizer::gen_index(ri) {
+                Some((idx, token)) => {
+                    speech.push(idx);
+                    hidden = self.ar.decode_step(token, &mut cache)?;
+                }
+                None => break, // EOS
             }
-            match MioTokenizer::speech_index(next) {
-                Some(idx) => speech.push(idx),
-                None => break, // unexpected non-speech token
-            }
-            logits = self.ar.decode_step(next, &mut cache)?;
         }
         Ok(speech)
     }

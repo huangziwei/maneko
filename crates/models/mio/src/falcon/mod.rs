@@ -7,9 +7,11 @@ mod mamba2;
 mod rope;
 
 use crate::config::FalconH1Config;
+use crate::text::{EOS_IDS, SPEECH_BASE, SPEECH_COUNT};
 use crate::weights::hf_file;
 use attention::{Attention, AttnCache};
-use candle_core::{DType, Device, IndexOp, Result, Tensor};
+use candle_core::quantized::{GgmlDType, QMatMul, QTensor};
+use candle_core::{DType, Device, IndexOp, Module, Result, Tensor};
 use candle_nn::VarBuilder;
 use mamba2::{Mamba2, MambaCache};
 use rope::Rope;
@@ -109,7 +111,11 @@ pub struct ArStages {
 
 /// The Falcon-H1 causal LM.
 pub struct FalconH1 {
-    embed: Tensor, // (vocab, hidden) — also the tied LM head
+    embed: Tensor, // (vocab, hidden) — input embedding + the full-vocab tied LM head (reference path)
+    /// Restricted **generation** head: the `Q8_0`-quantized embed rows for the only tokens valid
+    /// during the assistant turn — speech tokens then EOS — so decode runs a ~6× smaller, half-read
+    /// matmul than the full 78 336-vocab tied head. Rows `[speech_0..speech_{N-1}, EOS…]`.
+    gen_head_q: QMatMul,
     layers: Vec<Layer>,
     final_ln: Tensor,
     rope: Rope,
@@ -146,8 +152,18 @@ impl FalconH1 {
             layers.push(Layer::load(&cfg, m.pp(format!("layers.{i}")))?);
         }
         let rope = Rope::new(cfg.head_dim, 4096, cfg.rope_theta, device)?;
+        let embed = m.get((cfg.vocab_size, cfg.hidden_size), "embed_tokens.weight")?;
+        // Build the restricted generation head: gather the embed rows for speech tokens then EOS and
+        // quantize to Q8_0. The model only emits these during the assistant turn, so the per-token
+        // head matmul shrinks from (·,512)×(512,78336) to (·,512)×(512,12802) on the AVX2 GEMV path.
+        let mut gen_ids: Vec<u32> = (SPEECH_BASE..SPEECH_BASE + SPEECH_COUNT).collect();
+        gen_ids.extend_from_slice(&EOS_IDS);
+        let gen_idx = Tensor::from_vec(gen_ids.clone(), gen_ids.len(), device)?;
+        let gen_rows = embed.to_dtype(DType::F32)?.index_select(&gen_idx, 0)?; // (SPEECH_COUNT+2, hidden)
+        let gen_head_q = QMatMul::from_qtensor(QTensor::quantize(&gen_rows, GgmlDType::Q8_0)?)?;
         Ok(Self {
-            embed: m.get((cfg.vocab_size, cfg.hidden_size), "embed_tokens.weight")?,
+            embed,
+            gen_head_q,
             layers,
             final_ln: m.get(cfg.hidden_size, "final_layernorm.weight")?,
             rope,
@@ -203,9 +219,12 @@ impl FalconH1 {
         Ok(ArStages { layer0_mamba: m, layer0_attn: a, layer0_out: out0, hidden, logits })
     }
 
-    /// Tied LM head on a single hidden vector `(hidden,)` → logits `(vocab,)`.
-    fn lm_head_vec(&self, h: &Tensor) -> Result<Tensor> {
-        let logits = h.unsqueeze(0)?.matmul(&self.embed.t()?)?; // (1, vocab)
+    /// Restricted generation head on a single hidden vector `(hidden,)` → logits over the speech +
+    /// EOS rows `(SPEECH_COUNT + EOS_IDS.len(),)`, `· lm_head_multiplier`. Decode the argmax/sampled
+    /// index with [`crate::text::MioTokenizer::gen_index`]. The decode hot path uses this (not the
+    /// full tied head) — a ~6× smaller Q8_0 GEMV that halves the per-token weight read.
+    pub fn gen_head(&self, h: &Tensor) -> Result<Tensor> {
+        let logits = self.gen_head_q.forward(&h.unsqueeze(0)?.contiguous()?)?; // (1, SPEECH_COUNT+2)
         logits.squeeze(0)?.affine(self.cfg.lm_head_multiplier, 0.0)
     }
 
@@ -219,8 +238,9 @@ impl FalconH1 {
         Ok(DecodeCache { layers, seqlen: 0 })
     }
 
-    /// Prefill the prompt `ids` and return its last-position logits `(vocab,)` plus the populated
-    /// [`DecodeCache`] for [`decode_step`](Self::decode_step). O(T) for the whole prompt.
+    /// Prefill the prompt `ids` and return its last-position **hidden state** `(hidden,)` (post
+    /// final-norm) plus the populated [`DecodeCache`] for [`decode_step`](Self::decode_step). O(T)
+    /// for the whole prompt. Apply [`gen_head`](Self::gen_head) to sample the first speech token.
     pub fn prefill(&self, ids: &[u32]) -> Result<(Tensor, DecodeCache)> {
         let t = ids.len();
         let ids_t = Tensor::from_vec(ids.to_vec(), (1, t), &self.device)?;
@@ -231,11 +251,12 @@ impl FalconH1 {
         }
         cache.seqlen = t;
         let last = rms_norm(&h, &self.final_ln, self.cfg.rms_eps)?.i((0, t - 1))?; // (hidden,)
-        Ok((self.lm_head_vec(&last)?, cache))
+        Ok((last, cache))
     }
 
     /// Decode one `token` from `cache` (O(1) in sequence length): feed it, advance the caches, and
-    /// return the next-position logits `(vocab,)`.
+    /// return the next-position **hidden state** `(hidden,)`. Apply [`gen_head`](Self::gen_head) for
+    /// the next-token logits.
     pub fn decode_step(&self, token: u32, cache: &mut DecodeCache) -> Result<Tensor> {
         let pos = cache.seqlen;
         let ids_t = Tensor::from_vec(vec![token], (1, 1), &self.device)?;
@@ -244,8 +265,7 @@ impl FalconH1 {
             h = layer.forward_cached(&h, &self.rope, lc, pos)?;
         }
         cache.seqlen += 1;
-        let last = rms_norm(&h, &self.final_ln, self.cfg.rms_eps)?.i((0, 0))?; // (hidden,)
-        self.lm_head_vec(&last)
+        rms_norm(&h, &self.final_ln, self.cfg.rms_eps)?.i((0, 0)) // (hidden,)
     }
 }
 

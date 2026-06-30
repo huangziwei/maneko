@@ -8,12 +8,14 @@ use crate::config::FalconH1Config;
 use candle_core::{Result, Tensor};
 use tts_core::{sdpa, QLinear, Vb};
 
-/// Per-layer attention decode state: the K/V history as flat f32, time-major
-/// `k[(j·n_kv + kv)·head_dim + d]` (so appending a timestep is a cheap `extend`, no full-cache copy).
+/// Per-layer attention decode state: the K/V history kept **per KV head** as contiguous flat f32
+/// (`k[kv]` is `(tc·head_dim)`, key `j` at `j·head_dim`). Appending a timestep is a cheap `extend`
+/// (no full-cache copy), and each query head reads its GQA KV head's keys with unit stride — better
+/// cache locality than interleaving the heads (which strides `n_kv·head_dim` between keys).
 #[derive(Default)]
 pub struct AttnCache {
-    k: Vec<f32>,
-    v: Vec<f32>,
+    k: Vec<Vec<f32>>,
+    v: Vec<Vec<f32>>,
     tc: usize, // cached timesteps
 }
 
@@ -79,11 +81,18 @@ impl Attention {
         let k = rope.apply(&heads(self.k_proj.forward(h)?, nkv)?, pos)?; // (1, nkv, t, hd)
         let v = heads(self.v_proj.forward(h)?, nkv)?;
 
-        // Append the T new timesteps to the flat history (time-major `[i][kv][d]`), O(T).
-        let k_tm = k.transpose(1, 2)?.contiguous()?.flatten_all()?.to_vec1::<f32>()?;
-        let v_tm = v.transpose(1, 2)?.contiguous()?.flatten_all()?.to_vec1::<f32>()?;
-        cache.k.extend_from_slice(&k_tm);
-        cache.v.extend_from_slice(&v_tm);
+        // Append the T new timesteps per KV head, O(T). `k`/`v` are `(1, n_kv, t, hd)` contiguous,
+        // so the flat layout is `[kv][i][d]` — each KV head's block is already packed for `extend`.
+        let kflat = k.flatten_all()?.to_vec1::<f32>()?;
+        let vflat = v.flatten_all()?.to_vec1::<f32>()?;
+        if cache.k.is_empty() {
+            cache.k = vec![Vec::new(); nkv];
+            cache.v = vec![Vec::new(); nkv];
+        }
+        for kv in 0..nkv {
+            cache.k[kv].extend_from_slice(&kflat[kv * t * hd..(kv + 1) * t * hd]);
+            cache.v[kv].extend_from_slice(&vflat[kv * t * hd..(kv + 1) * t * hd]);
+        }
         cache.tc += t;
 
         let qv = q.flatten_all()?.to_vec1::<f32>()?; // (nh·t·hd), `[h][i][d]`
@@ -93,15 +102,16 @@ impl Attention {
         for i in 0..t {
             let valid = pos + i + 1; // query at global pos+i attends cached keys 0..=pos+i
             for hh in 0..nh {
-                let kv = hh / n_rep;
+                let kbuf = &cache.k[hh / n_rep]; // this query head's GQA KV head, contiguous (tc·hd)
+                let vbuf = &cache.v[hh / n_rep];
                 let qbase = (hh * t + i) * hd;
                 // scores[j] = scale · q·k_j , tracking the max for a stable softmax
                 let mut maxs = f32::NEG_INFINITY;
                 for (j, sj) in scores.iter_mut().enumerate().take(valid) {
-                    let kbase = (j * nkv + kv) * hd;
+                    let kbase = j * hd;
                     let mut s = 0f32;
                     for d in 0..hd {
-                        s += qv[qbase + d] * cache.k[kbase + d];
+                        s += qv[qbase + d] * kbuf[kbase + d];
                     }
                     s *= scale;
                     *sj = s;
@@ -122,7 +132,7 @@ impl Attention {
                 for d in 0..hd {
                     let mut acc = 0f32;
                     for (j, &sj) in scores.iter().enumerate().take(valid) {
-                        acc += sj * cache.v[(j * nkv + kv) * hd + d];
+                        acc += sj * vbuf[j * hd + d];
                     }
                     out[obase + d] = acc * inv;
                 }

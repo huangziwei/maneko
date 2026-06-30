@@ -57,9 +57,10 @@ fn ar_forward_matches_golden() -> anyhow::Result<()> {
 }
 
 /// The incremental cached decode (`prefill` + `decode_step`, which use the hand-rolled depthwise
-/// conv) must match the reference full `forward` (candle `Conv1d`) at the logit level, in pure f32.
-/// This isolates the cached path's numerics from q8 rounding — a large divergence here is a conv /
-/// recurrence bug; ~1e-5 is the expected f32-accumulation floor.
+/// conv + hand-rolled attention) must match the reference full `forward` at the **hidden-state**
+/// level, in pure f32. Comparing hidden (not logits) isolates the AR layers from the restricted
+/// q8 generation head — a large divergence here is a conv / attention / recurrence bug; the diff is
+/// the f32-accumulation floor (grows mildly with context length).
 #[test]
 #[ignore = "needs f32 AR weights (Aratako/MioTTS-0.1B model.safetensors)"]
 fn cached_decode_matches_full_forward() -> anyhow::Result<()> {
@@ -71,29 +72,33 @@ fn cached_decode_matches_full_forward() -> anyhow::Result<()> {
     let n = 192usize;
     let ids: Vec<u32> = (0..n).map(|i| ((i * 1009 + 17) % 78336) as u32).collect();
 
-    // Reference: full forward over the whole sequence (logits at every position).
+    // Reference: full forward over the whole sequence → hidden at every position.
     let ids_t = Tensor::from_vec(ids.iter().map(|&x| x as i64).collect::<Vec<_>>(), (1, n), &dev)?;
-    let (_, logits_full) = model.forward(&ids_t)?;
+    let (hidden_full, _) = model.forward(&ids_t)?;
 
-    // prefill(all) last-position logits must match forward's last position.
+    // prefill(all) last-position hidden must match forward's last position.
     let (pref_last, _) = model.prefill(&ids)?;
-    let d_prefill = max_abs_diff(&logits_full.i((0, n - 1))?, &pref_last)?;
+    let d_prefill = max_abs_diff(&hidden_full.i((0, n - 1))?, &pref_last)?;
     eprintln!("prefill(all) vs forward last:        max_abs_diff = {d_prefill:.3e}");
 
-    // Incremental decode: prefill the first token, then step the rest, comparing the logits after
-    // feeding token i (predict i+1) to forward's position i — across the whole growing context.
-    let (mut step_logits, mut cache) = model.prefill(&ids[..1])?;
-    let mut worst = max_abs_diff(&logits_full.i((0, 0))?, &step_logits)?;
+    // Incremental decode: prefill the first token, then step the rest, comparing the hidden after
+    // feeding token i to forward's position i — across the whole growing context.
+    let (mut step_hidden, mut cache) = model.prefill(&ids[..1])?;
+    let mut worst = max_abs_diff(&hidden_full.i((0, 0))?, &step_hidden)?;
     for i in 1..n {
-        step_logits = model.decode_step(ids[i], &mut cache)?;
-        let d = max_abs_diff(&logits_full.i((0, i))?, &step_logits)?;
+        step_hidden = model.decode_step(ids[i], &mut cache)?;
+        let d = max_abs_diff(&hidden_full.i((0, i))?, &step_hidden)?;
         if d > worst {
             worst = d;
         }
     }
     eprintln!("decode_step vs forward (all {n} pos):  max_abs_diff = {worst:.3e}");
 
+    // Hidden-space tolerances: the model samples logits = hidden·embedᵀ·`lm_head_multiplier`
+    // (≈0.078), so these pre-head diffs are ~13× the logit-space diffs the sampler actually sees
+    // (≈5e-3 here). The decode floor grows with context (f32 accumulation over the recurrence); a
+    // real conv/attention bug would be O(0.5+), far above either bar.
     assert!(d_prefill < 1e-2, "prefill diverges from forward: {d_prefill:.3e}");
-    assert!(worst < 1e-2, "decode_step diverges from forward at some position: {worst:.3e}");
+    assert!(worst < 6e-2, "decode_step diverges from forward at some position: {worst:.3e}");
     Ok(())
 }

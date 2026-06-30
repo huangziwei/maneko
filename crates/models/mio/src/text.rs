@@ -131,6 +131,14 @@ impl MioTokenizer {
     pub fn is_eos(id: u32) -> bool {
         EOS_IDS.contains(&id)
     }
+
+    /// Decode an index from the restricted **generation head** (rows `[speech_0..speech_{N-1}, EOS…]`,
+    /// see [`crate::FalconH1::gen_head`]). `Some((content_index, embed_id))` for a speech token (feed
+    /// `embed_id` back to the AR), or `None` for EOS (stop). The head only spans the tokens valid
+    /// during the assistant turn, so this is the inverse of that row order.
+    pub fn gen_index(ri: u32) -> Option<(i64, u32)> {
+        (ri < SPEECH_COUNT).then_some((ri as i64, SPEECH_BASE + ri))
+    }
 }
 
 #[cfg(test)]
