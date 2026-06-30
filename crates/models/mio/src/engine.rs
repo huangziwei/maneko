@@ -1,16 +1,21 @@
 //! End-to-end MioTTS engine: text → ChatML → Falcon-H1 AR (speech tokens) → MioCodec → 24 kHz wav.
 //!
-//! Generation is greedy with re-prefill each step (simple + correct; KV/conv/SSM caching for O(T)
-//! decode is M6 perf work). The reference is **not** in the AR prompt — speaker identity is the
-//! 128-d `global` embedding handed to the codec. Clone it on-device from any WAV with the WavLM
-//! [`VoiceEncoder`] ([`Mio::load_voice_encoder`] + [`Mio::encode_ref_file`]).
+//! Decoding is greedy ([`Mio::generate`]) or temperature / top-p sampling ([`Mio::generate_with`] +
+//! [`crate::sampler::GenConfig`]): the prompt is prefilled once, then tokens decode incrementally via
+//! the AR's KV / conv / SSM caches (O(T), vs the old re-prefill-every-step O(T²)). Normalize input
+//! text at the frontend with [`crate::text::normalize_text`] — the model layer takes the prompt
+//! verbatim. The reference is
+//! **not** in the AR prompt — speaker identity is the 128-d `global` embedding handed to the codec.
+//! Clone it on-device from any WAV with the WavLM [`VoiceEncoder`] ([`Mio::load_voice_encoder`] +
+//! [`Mio::encode_ref_file`]).
 
 use crate::codec::MioCodec;
 use crate::encoder::VoiceEncoder;
 use crate::falcon::FalconH1;
+use crate::sampler::{GenConfig, Sampler};
 use crate::text::MioTokenizer;
 use anyhow::Context;
-use candle_core::{Device, IndexOp, Result, Tensor};
+use candle_core::{Device, Tensor};
 
 pub struct Mio {
     ar: FalconH1,
@@ -21,6 +26,8 @@ pub struct Mio {
 }
 
 impl Mio {
+    /// Reference loader: full-precision f32 AR (from `Aratako/MioTTS-0.1B`). Used by the parity
+    /// goldens. For deployment prefer [`from_gguf`](Self::from_gguf) (q8 AR, the fast Intel path).
     pub fn from_hf(device: &Device) -> anyhow::Result<Self> {
         Ok(Self {
             ar: FalconH1::from_hf(device)?,
@@ -29,6 +36,32 @@ impl Mio {
             voice_enc: None,
             device: device.clone(),
         })
+    }
+
+    /// Deployment loader: q8 AR from a GGUF (Linear weights `Q8_0`), with the f32 codec + tokenizer
+    /// from their HF repos. The fast CPU path — on x86_64 candle's `Q8_0` GEMV needs an AVX2 build
+    /// (see the crate-root guard). Resolve the GGUF with [`crate::weights::resolve_ar_q8`].
+    pub fn from_gguf(device: &Device, ar_gguf: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
+        Ok(Self {
+            ar: FalconH1::from_gguf(ar_gguf, device)?,
+            codec: MioCodec::from_hf(device)?,
+            tok: MioTokenizer::from_hf()?,
+            voice_enc: None,
+            device: device.clone(),
+        })
+    }
+
+    /// The deployment default, picking the right AR precision for the build target:
+    /// **q8 on x86_64** (candle's AVX2 `Q8_0` GEMV beats f32 there — the Intel-Mac path) and **f32
+    /// elsewhere** (on arm64/NEON the f32 `gemm` is faster than q8 for these small matmuls, and
+    /// exact). An explicit `gguf` always forces the q8 path (resolved via
+    /// [`crate::weights::resolve_ar_q8`]). Load the voice encoder separately for cloning.
+    pub fn load_default(device: &Device, gguf: Option<&std::path::Path>) -> anyhow::Result<Self> {
+        if gguf.is_some() || cfg!(target_arch = "x86_64") {
+            Self::from_gguf(device, crate::weights::resolve_ar_q8(gguf)?)
+        } else {
+            Self::from_hf(device)
+        }
     }
 
     /// Load the WavLM voice encoder so [`encode_ref`](Self::encode_ref) /
@@ -47,30 +80,33 @@ impl Mio {
         self.codec.sample_rate()
     }
 
-    /// Last-position logits `(vocab,)` for a token sequence (full re-prefill).
-    fn last_logits(&self, ids: &[u32]) -> Result<Tensor> {
-        let t = ids.len();
-        let ids_t = Tensor::from_vec(ids.to_vec(), (1, t), &self.device)?;
-        let (_hidden, logits) = self.ar.forward(&ids_t)?; // (1, T, vocab)
-        logits.i((0, t - 1))
-    }
-
     /// Greedy-generate the MioCodec content-token indices for `text` (stops on EOS or `max_new`).
     pub fn generate_tokens(&self, text: &str, max_new: usize) -> anyhow::Result<Vec<i64>> {
-        let mut ids = self.tok.encode_prompt(text)?;
+        self.generate_tokens_with(text, &GenConfig::greedy(max_new))
+    }
+
+    /// Generate the MioCodec content-token indices for `text` under `cfg` (greedy or temperature /
+    /// top-p sampling; stops on EOS, a non-speech token, or `cfg.max_new`). `text` is the **already
+    /// rendered** prompt input — normalize it with [`crate::text::normalize_text`] at the frontend.
+    ///
+    /// Prefills the prompt once, then decodes incrementally via the AR's KV / conv / SSM caches
+    /// ([`FalconH1::prefill`](crate::FalconH1::prefill) + `decode_step`) — O(T) total, vs the old
+    /// re-prefill-every-step O(T²).
+    pub fn generate_tokens_with(&self, text: &str, cfg: &GenConfig) -> anyhow::Result<Vec<i64>> {
+        let ids = self.tok.encode_prompt(text)?;
+        let mut sampler = Sampler::new(cfg);
+        let (mut logits, mut cache) = self.ar.prefill(&ids)?;
         let mut speech = Vec::new();
-        for _ in 0..max_new {
-            let next = self.last_logits(&ids)?.argmax(0)?.to_scalar::<u32>()?;
+        for _ in 0..cfg.max_new {
+            let next = sampler.sample(&logits)?;
             if MioTokenizer::is_eos(next) {
                 break;
             }
             match MioTokenizer::speech_index(next) {
-                Some(idx) => {
-                    speech.push(idx);
-                    ids.push(next);
-                }
+                Some(idx) => speech.push(idx),
                 None => break, // unexpected non-speech token
             }
+            logits = self.ar.decode_step(next, &mut cache)?;
         }
         Ok(speech)
     }
@@ -87,9 +123,16 @@ impl Mio {
         Ok(self.codec.decode(&indices, global, target)?)
     }
 
-    /// Full pipeline: `text` + voice `global` `(128,)` → waveform `(samples,)` @ 24 kHz.
+    /// Full pipeline (greedy): `text` + voice `global` `(128,)` → waveform `(samples,)` @ 24 kHz.
     pub fn generate(&self, text: &str, global: &Tensor, max_new: usize) -> anyhow::Result<Tensor> {
-        let speech = self.generate_tokens(text, max_new)?;
+        self.generate_with(text, global, &GenConfig::greedy(max_new))
+    }
+
+    /// Full pipeline under `cfg` (greedy or temperature / top-p sampling): `text` + voice `global`
+    /// `(128,)` → waveform `(samples,)` @ 24 kHz. Normalize `text` at the frontend
+    /// ([`crate::text::normalize_text`]); the model layer takes the prompt input verbatim.
+    pub fn generate_with(&self, text: &str, global: &Tensor, cfg: &GenConfig) -> anyhow::Result<Tensor> {
+        let speech = self.generate_tokens_with(text, cfg)?;
         self.decode_speech(&speech, global)
     }
 

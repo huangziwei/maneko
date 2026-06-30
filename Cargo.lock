@@ -1866,6 +1866,7 @@ version = "0.1.0"
 dependencies = [
  "candle-core",
  "irodori",
+ "mio-tts",
  "pocket",
  "pyo3",
  "tts-core",
@@ -1952,6 +1953,7 @@ dependencies = [
  "candle-core",
  "candle-nn",
  "hf-hub",
+ "rand 0.8.6",
  "realfft",
  "tokenizers 0.21.4",
  "tracing",
@@ -3593,6 +3595,7 @@ dependencies = [
  "clap",
  "hound",
  "irodori",
+ "mio-tts",
  "owo-colors",
  "pocket",
  "tts-core",

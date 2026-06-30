@@ -43,3 +43,23 @@ fn cli_generate_irodori() {
     assert_eq!(r.spec().sample_rate, 48000);
     std::fs::remove_file(out).unwrap();
 }
+
+#[test]
+#[ignore = "needs MioTTS weights + .cache/mio_wavlm.safetensors + HF_HOME=$PWD/.cache/huggingface"]
+fn cli_generate_mio() {
+    let out = "test_cli_mio.wav";
+    let _ = std::fs::remove_file(out);
+    #[allow(deprecated)]
+    let mut cmd = Command::cargo_bin("tts").unwrap();
+    cmd.args([
+        "generate", "--engine", "mio", "--text", "こんにちは。", "--voice", "voices/ja/堺雅人.wav",
+        "--seed", "0", "--max-tokens", "128", "--output", out,
+    ])
+    .assert()
+    .success();
+    assert!(Path::new(out).exists());
+    let r = hound::WavReader::open(out).unwrap();
+    assert_eq!(r.spec().sample_rate, 24000);
+    assert!(r.duration() > 0);
+    std::fs::remove_file(out).unwrap();
+}

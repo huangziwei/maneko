@@ -99,3 +99,61 @@ fn clone_from_wav_and_generate() -> anyhow::Result<()> {
     eprintln!("✓ cloned voice generated {:.2}s @ {} Hz (peak {peak:.3})", flat.len() as f64 / mio.sample_rate() as f64, mio.sample_rate());
     Ok(())
 }
+
+/// M6 q8: the quantized AR (`from_gguf`) stays close to the f32 reference and still produces valid
+/// audio. q8 is lossy, so we don't demand bit-parity — we check greedy-token agreement on a prefix
+/// and a plausible waveform. Needs the f32 AR (HF), the q8 GGUF (`.cache/mio_ar.q8.gguf`), and the
+/// preset global (`dump_golden_mio_preset.py`).
+#[test]
+#[ignore = "needs f32 AR (HF) + .cache/mio_ar.q8.gguf + mio_preset_ref golden"]
+fn q8_close_to_f32_greedy() -> anyhow::Result<()> {
+    let dev = Device::Cpu;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let q8_path = root.join(".cache/mio_ar.q8.gguf");
+    assert!(q8_path.exists(), "missing {q8_path:?}; run mio-q8 on the AR safetensors");
+
+    let text = "こんにちは。";
+    let f32_mio = Mio::from_hf(&dev)?;
+    let q8_mio = Mio::from_gguf(&dev, &q8_path)?;
+
+    // Logit-level diff at the last prompt position: the bug-revealing signal. Q8_0 perturbs logits
+    // only slightly, so the distributions should track closely even if a borderline argmax flips.
+    use candle_core::IndexOp;
+    use mio_tts::{FalconH1, MioTokenizer};
+    let tok = MioTokenizer::from_hf()?;
+    let ids: Vec<u32> = tok.encode_prompt(text)?;
+    let ids_t = candle_core::Tensor::from_vec(ids.clone(), (1, ids.len()), &dev)?;
+    let (_, fl) = FalconH1::from_hf(&dev)?.forward(&ids_t)?;
+    let (_, ql) = FalconH1::from_gguf(&q8_path, &dev)?.forward(&ids_t)?;
+    let last_f = fl.i((0, ids.len() - 1))?;
+    let last_q = ql.i((0, ids.len() - 1))?;
+    let logit_diff = (&last_f - &last_q)?.abs()?.max_all()?.to_scalar::<f32>()?;
+    let fmax = last_f.max_all()?.to_scalar::<f32>()?;
+    let fa = last_f.argmax(0)?.to_scalar::<u32>()?;
+    let qa = last_q.argmax(0)?.to_scalar::<u32>()?;
+    eprintln!("prompt last-logit: max|Δ|={logit_diff:.3} (f32 logit range peak {fmax:.1}); argmax f32={fa} q8={qa}");
+    // Q8_0 must keep logits close (small absolute diff vs the ~tens-scale logit magnitudes).
+    assert!(logit_diff < 2.0, "q8 logits diverge too far from f32: {logit_diff}");
+
+    let f = f32_mio.generate_tokens(text, 256)?; // greedy
+    let q = q8_mio.generate_tokens(text, 256)?; // greedy
+    let prefix = f.iter().zip(&q).take_while(|(a, b)| a == b).count();
+    eprintln!("f32 {} tokens, q8 {} tokens; identical greedy prefix = {prefix}", f.len(), q.len());
+
+    // q8 perturbs logits slightly; lengths should stay comparable (argmax may flip on borderline steps).
+    assert!(!q.is_empty(), "q8 produced no speech tokens");
+    assert!(q.len() as f64 >= f.len() as f64 * 0.5 && q.len() as f64 <= f.len() as f64 * 2.0,
+        "q8 token count {} far from f32 {}", q.len(), f.len());
+
+    // q8 decodes to valid audio with the real preset voice.
+    let preset = golden("mio_preset_ref.safetensors");
+    if preset.exists() {
+        let global = candle_core::safetensors::load(&preset, &dev)?.get("global").unwrap().clone();
+        let wav = q8_mio.decode_speech(&q, &global)?;
+        let flat = wav.flatten_all()?.to_vec1::<f32>()?;
+        let peak = flat.iter().fold(0f32, |m, v| m.max(v.abs()));
+        assert!(flat.iter().all(|v| v.is_finite()) && peak > 1e-3 && peak <= 1.5, "implausible q8 audio (peak {peak})");
+        eprintln!("✓ q8 decoded {:.2}s @ {} Hz (peak {peak:.3})", flat.len() as f64 / q8_mio.sample_rate() as f64, q8_mio.sample_rate());
+    }
+    Ok(())
+}

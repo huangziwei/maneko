@@ -30,6 +30,8 @@ tracing.workspace = true
 tokenizers = { workspace = true, features = ["onig"] }
 # Inverse real FFT for the MioCodec iSTFT head (already transitive in the workspace).
 realfft = "3"
+# Seeded temperature / top-p sampling for AR generation (greedy needs no RNG).
+rand.workspace = true
 
 [dev-dependencies]
 candle-core.workspace = true

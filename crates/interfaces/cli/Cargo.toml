@@ -20,13 +20,14 @@ path = "src/main.rs"
 [features]
 default = []
 # NOTE: int8/quantized is a pocket capability but not yet wired through Engine/CLI (P4 perf pass).
-metal = ["pocket/metal", "irodori/metal", "tts-core/metal"]
-mkl = ["pocket/mkl", "irodori/mkl", "tts-core/mkl"]
-accelerate = ["pocket/accelerate", "irodori/accelerate", "tts-core/accelerate"]
+metal = ["pocket/metal", "irodori/metal", "mio-tts/metal", "tts-core/metal"]
+mkl = ["pocket/mkl", "irodori/mkl", "mio-tts/mkl", "tts-core/mkl"]
+accelerate = ["pocket/accelerate", "irodori/accelerate", "mio-tts/accelerate", "tts-core/accelerate"]
 
 [dependencies]
 pocket = { path = "../../models/pocket" }
 irodori = { path = "../../models/irodori" }
+mio-tts = { path = "../../models/mio" }
 tts-core = { path = "../../core" }
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }

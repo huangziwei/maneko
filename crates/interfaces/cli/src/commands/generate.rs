@@ -1,9 +1,10 @@
-//! `tts generate` — unified text → WAV over both maneko engines.
+//! `tts generate` — unified text → WAV over the maneko engines.
 //!
-//! `--engine pocket` (multilingual, 24 kHz, via [`pocket::Engine`]) or `--engine irodori`
-//! (Japanese, 48 kHz, via [`irodori::Irodori`]). Shared flags (text, voice, output, device) plus
-//! engine-specific ones. Weights resolve from `HF_HOME` — point it at the project-local
-//! `.cache/huggingface` (both engines' repos live there).
+//! `--engine pocket` (multilingual, 24 kHz, via [`pocket::Engine`]), `--engine irodori`
+//! (Japanese, 48 kHz, via [`irodori::Irodori`]), or `--engine mio` (Japanese, 24 kHz, codec-LM via
+//! [`mio_tts::Mio`], voice cloned on-device from a reference WAV). Shared flags (text, voice, output,
+//! device) plus engine-specific ones. Weights resolve from `HF_HOME` — point it at the project-local
+//! `.cache/huggingface` (the engines' repos live there).
 
 use anyhow::Result;
 use candle_core::{Device, Tensor};
@@ -19,10 +20,16 @@ pub enum EngineKind {
     Pocket,
     /// Irodori: Japanese, 48 kHz, flow-matching diffusion.
     Irodori,
+    /// MioTTS: Japanese, 24 kHz, Falcon-H1 codec-LM; clones the voice on-device from a reference WAV.
+    Mio,
 }
 
 /// Default text (English) shown when `--text` is omitted; pair with `--engine pocket`.
 pub const DEFAULT_TEXT: &str = "Hello world! I am maneko, a native Rust text to speech engine.";
+
+/// Japanese fallback substituted for [`DEFAULT_TEXT`] when `--engine mio` runs without `--text`
+/// (the English default is a pocket placeholder; mio is Japanese-only).
+pub const MIO_DEFAULT_TEXT: &str = "こんにちは。今日はいい天気ですね。";
 
 #[derive(Parser, Debug)]
 pub struct GenerateArgs {
@@ -35,7 +42,8 @@ pub struct GenerateArgs {
     pub engine: EngineKind,
 
     /// Voice. pocket: a predefined name / .wav / .safetensors / hf:// / base64.
-    /// irodori: a reference .wav to clone. Default: the engine's stock voice.
+    /// irodori / mio: a reference .wav to clone (mio also accepts a stem under voices/ja/).
+    /// Default: the engine's stock voice.
     #[arg(short, long)]
     pub voice: Option<String>,
 
@@ -56,13 +64,26 @@ pub struct GenerateArgs {
     #[arg(long, default_value_t = 8)]
     pub steps: usize,
 
-    /// [irodori] Load the DiT from a local q8 GGUF (Vb::from_gguf) instead of the f32 HF weights.
+    /// [irodori/mio] Load the model from a local q8 GGUF (irodori: DiT; mio: the AR) instead of
+    /// resolving it from the maneko HF repo.
     #[arg(long)]
     pub gguf: Option<PathBuf>,
 
-    /// [pocket] Sampling temperature.
-    #[arg(long, default_value_t = 0.7)]
-    pub temperature: f32,
+    /// [pocket/mio] Sampling temperature (default: pocket 0.7, mio 0.8).
+    #[arg(long)]
+    pub temperature: Option<f32>,
+
+    /// [mio] Nucleus top-p (1.0 = full distribution).
+    #[arg(long, default_value_t = 1.0)]
+    pub top_p: f32,
+
+    /// [mio] Max speech tokens (~25/s; 700 ≈ 28 s).
+    #[arg(long, default_value_t = 700)]
+    pub max_tokens: usize,
+
+    /// [mio] RNG seed for reproducible sampling (default: entropy).
+    #[arg(long)]
+    pub seed: Option<u64>,
 
     /// [pocket] LSD decode steps.
     #[arg(long, default_value_t = 1)]
@@ -114,6 +135,7 @@ pub fn run(args: GenerateArgs) -> Result<()> {
     let (audio, sample_rate) = match args.engine {
         EngineKind::Pocket => generate_pocket(&args, device)?,
         EngineKind::Irodori => generate_irodori(&args, device)?,
+        EngineKind::Mio => generate_mio(&args, device)?,
     };
     let gen_s = t.elapsed().as_secs_f64();
 
@@ -143,7 +165,7 @@ pub fn run(args: GenerateArgs) -> Result<()> {
 /// pocket-tts via the cached multi-model [`pocket::Engine`].
 fn generate_pocket(args: &GenerateArgs, device: Device) -> Result<(Tensor, usize)> {
     let params = pocket::GenParams {
-        temp: args.temperature,
+        temp: args.temperature.unwrap_or(0.7),
         lsd_decode_steps: args.lsd_decode_steps,
         eos_threshold: args.eos_threshold,
         noise_clamp: args.noise_clamp,
@@ -171,4 +193,40 @@ fn generate_irodori(args: &GenerateArgs, device: Device) -> Result<(Tensor, usiz
     let audio = iro.generate(&args.text, args.voice.as_deref(), &opts)?;
     let sr = iro.sample_rate();
     Ok((audio, sr))
+}
+
+/// MioTTS via [`mio_tts::Mio`]: AR (q8 on x86_64, f32 on arm64; clone `--voice` on-device via
+/// WavLM), then text → 24 kHz wav. `--gguf` forces a local q8 GGUF; q8 otherwise resolves from
+/// the maneko HF repo.
+fn generate_mio(args: &GenerateArgs, device: Device) -> Result<(Tensor, usize)> {
+    let mut mio = mio_tts::Mio::load_default(&device, args.gguf.as_deref())?;
+    mio.load_voice_encoder(mio_tts::weights::resolve_wavlm(None)?)?;
+    let global = mio.encode_ref_file(resolve_mio_ref(args.voice.as_deref())?)?;
+
+    // The English DEFAULT_TEXT is a pocket placeholder; mio is Japanese — fall back to its own.
+    let raw = if args.text == DEFAULT_TEXT { MIO_DEFAULT_TEXT } else { args.text.as_str() };
+    let text = mio_tts::normalize_text(raw);
+    let cfg = mio_tts::GenConfig {
+        max_new: args.max_tokens,
+        temperature: args.temperature.unwrap_or(0.8),
+        top_p: args.top_p,
+        seed: args.seed,
+    };
+    let wav = mio.generate_with(&text, &global, &cfg)?;
+    Ok((wav, mio.sample_rate()))
+}
+
+/// Resolve `--voice` for mio: an existing `.wav` path, else a stem under `voices/ja/`, else error.
+/// Defaults to a stock Japanese reference when omitted.
+fn resolve_mio_ref(voice: Option<&str>) -> Result<PathBuf> {
+    let name = voice.unwrap_or("voices/ja/堺雅人.wav");
+    let direct = PathBuf::from(name);
+    if direct.exists() {
+        return Ok(direct);
+    }
+    let stem = PathBuf::from("voices/ja").join(format!("{name}.wav"));
+    if stem.exists() {
+        return Ok(stem);
+    }
+    anyhow::bail!("mio voice {name:?} not found — pass a .wav path or a stem under voices/ja/");
 }

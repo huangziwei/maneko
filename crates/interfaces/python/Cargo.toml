@@ -15,13 +15,14 @@ crate-type = ["cdylib"]
 
 [features]
 default = []
-accelerate = ["pocket/accelerate", "irodori/accelerate", "tts-core/accelerate"]
-metal = ["pocket/metal", "irodori/metal", "tts-core/metal"]
-mkl = ["pocket/mkl", "irodori/mkl", "tts-core/mkl"]
+accelerate = ["pocket/accelerate", "irodori/accelerate", "mio-tts/accelerate", "tts-core/accelerate"]
+metal = ["pocket/metal", "irodori/metal", "mio-tts/metal", "tts-core/metal"]
+mkl = ["pocket/mkl", "irodori/mkl", "mio-tts/mkl", "tts-core/mkl"]
 
 [dependencies]
 pyo3 = { version = "0.27.2", features = ["extension-module"] }
 pocket = { path = "../../models/pocket" }
 irodori = { path = "../../models/irodori" }
+mio-tts = { path = "../../models/mio" }
 tts-core = { path = "../../core" }
 candle-core.workspace = true

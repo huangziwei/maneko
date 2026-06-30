@@ -8,28 +8,28 @@ mod rope;
 
 use crate::config::FalconH1Config;
 use crate::weights::hf_file;
-use attention::Attention;
-use candle_core::{DType, Device, Result, Tensor};
-use candle_nn::{Linear, Module, VarBuilder};
-use mamba2::Mamba2;
+use attention::{Attention, AttnCache};
+use candle_core::{DType, Device, IndexOp, Result, Tensor};
+use candle_nn::VarBuilder;
+use mamba2::{Mamba2, MambaCache};
 use rope::Rope;
-use tts_core::rms_norm;
+use tts_core::{rms_norm, QLinear, Vb};
 
 const AR_REPO: &str = "Aratako/MioTTS-0.1B";
 
 /// SwiGLU MLP: `down(up(x) · silu(gate(x)))` (multipliers are 1.0).
 struct Mlp {
-    gate: Linear,
-    up: Linear,
-    down: Linear,
+    gate: QLinear,
+    up: QLinear,
+    down: QLinear,
 }
 impl Mlp {
-    fn load(cfg: &FalconH1Config, vb: VarBuilder) -> Result<Self> {
+    fn load(cfg: &FalconH1Config, vb: Vb) -> Result<Self> {
         let (h, i) = (cfg.hidden_size, cfg.intermediate_size);
         Ok(Self {
-            gate: candle_nn::linear_no_bias(h, i, vb.pp("gate_proj"))?,
-            up: candle_nn::linear_no_bias(h, i, vb.pp("up_proj"))?,
-            down: candle_nn::linear_no_bias(i, h, vb.pp("down_proj"))?,
+            gate: vb.pp("gate_proj").qlinear(h, i, false)?,
+            up: vb.pp("up_proj").qlinear(h, i, false)?,
+            down: vb.pp("down_proj").qlinear(i, h, false)?,
         })
     }
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -46,7 +46,7 @@ struct Layer {
     eps: f64,
 }
 impl Layer {
-    fn load(cfg: &FalconH1Config, vb: VarBuilder) -> Result<Self> {
+    fn load(cfg: &FalconH1Config, vb: Vb) -> Result<Self> {
         Ok(Self {
             input_ln: vb.get(cfg.hidden_size, "input_layernorm.weight")?,
             mamba: Mamba2::load(cfg, vb.pp("mamba"))?,
@@ -71,6 +71,31 @@ impl Layer {
     fn forward(&self, x: &Tensor, rope: &Rope, mask: &Tensor) -> Result<Tensor> {
         Ok(self.forward_parts(x, rope, mask)?.2)
     }
+
+    /// Cache-aware layer step (Mamba ‖ attention off a shared RMSNorm, then SwiGLU). Same math as
+    /// [`forward`] but the Mamba state + attention K/V carry across calls via `cache`; `pos` is the
+    /// global position of the first of `x`'s tokens (for RoPE + the causal span).
+    fn forward_cached(&self, x: &Tensor, rope: &Rope, cache: &mut LayerCache, pos: usize) -> Result<Tensor> {
+        let normed = rms_norm(x, &self.input_ln, self.eps)?;
+        let m = self.mamba.forward_cached(&normed, &mut cache.mamba)?;
+        let a = self.attn.forward_cached(&normed, rope, &mut cache.attn, pos)?;
+        let mixed = (x + (&m + &a)?)?;
+        let ff = self.mlp.forward(&rms_norm(&mixed, &self.pre_ff_ln, self.eps)?)?;
+        &mixed + ff
+    }
+}
+
+/// Per-layer decode state (Mamba SSM + conv history, attention K/V).
+struct LayerCache {
+    mamba: MambaCache,
+    attn: AttnCache,
+}
+
+/// Whole-model incremental-decode state: one [`LayerCache`] per layer + the current sequence length
+/// (the RoPE position / causal span for the next step).
+pub struct DecodeCache {
+    layers: Vec<LayerCache>,
+    seqlen: usize,
 }
 
 /// Layer-0 intermediates, for stage-by-stage parity against the Python golden.
@@ -98,11 +123,23 @@ impl FalconH1 {
         Ok(Self::from_safetensors(path, device)?)
     }
 
+    /// Load f32 weights from a `model.safetensors`. Numerically identical to the original path —
+    /// `QLinear` over `QMatMul::Tensor` computes `x @ wᵀ` exactly like `candle_nn::Linear`.
     pub fn from_safetensors(path: impl AsRef<std::path::Path>, device: &Device) -> Result<Self> {
-        let cfg = FalconH1Config::miotts_0_1b();
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(&[path.as_ref().to_path_buf()], DType::F32, device)?
         };
+        Self::from_vb(Vb::Full(vb), device)
+    }
+
+    /// Load a q8 GGUF (Linear weights `Q8_0`, the rest `F16`/`F32`) — the fast Intel-CPU path.
+    pub fn from_gguf(path: impl AsRef<std::path::Path>, device: &Device) -> anyhow::Result<Self> {
+        Ok(Self::from_vb(Vb::from_gguf(path, device)?, device)?)
+    }
+
+    /// Build from either weight source (full-precision safetensors or quantized GGUF).
+    fn from_vb(vb: Vb, device: &Device) -> Result<Self> {
+        let cfg = FalconH1Config::miotts_0_1b();
         let m = vb.pp("model");
         let mut layers = Vec::with_capacity(cfg.num_layers);
         for i in 0..cfg.num_layers {
@@ -164,6 +201,51 @@ impl FalconH1 {
         let hidden = rms_norm(&h, &self.final_ln, self.cfg.rms_eps)?;
         let logits = self.lm_head(&hidden)?;
         Ok(ArStages { layer0_mamba: m, layer0_attn: a, layer0_out: out0, hidden, logits })
+    }
+
+    /// Tied LM head on a single hidden vector `(hidden,)` → logits `(vocab,)`.
+    fn lm_head_vec(&self, h: &Tensor) -> Result<Tensor> {
+        let logits = h.unsqueeze(0)?.matmul(&self.embed.t()?)?; // (1, vocab)
+        logits.squeeze(0)?.affine(self.cfg.lm_head_multiplier, 0.0)
+    }
+
+    /// A fresh decode cache (zero Mamba state, empty attention K/V) for batch size 1.
+    fn init_cache(&self) -> Result<DecodeCache> {
+        let layers = self
+            .layers
+            .iter()
+            .map(|l| Ok(LayerCache { mamba: l.mamba.init_cache(1, &self.device)?, attn: AttnCache::default() }))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(DecodeCache { layers, seqlen: 0 })
+    }
+
+    /// Prefill the prompt `ids` and return its last-position logits `(vocab,)` plus the populated
+    /// [`DecodeCache`] for [`decode_step`](Self::decode_step). O(T) for the whole prompt.
+    pub fn prefill(&self, ids: &[u32]) -> Result<(Tensor, DecodeCache)> {
+        let t = ids.len();
+        let ids_t = Tensor::from_vec(ids.to_vec(), (1, t), &self.device)?;
+        let mut cache = self.init_cache()?;
+        let mut h = self.embed(&ids_t)?;
+        for (layer, lc) in self.layers.iter().zip(cache.layers.iter_mut()) {
+            h = layer.forward_cached(&h, &self.rope, lc, 0)?;
+        }
+        cache.seqlen = t;
+        let last = rms_norm(&h, &self.final_ln, self.cfg.rms_eps)?.i((0, t - 1))?; // (hidden,)
+        Ok((self.lm_head_vec(&last)?, cache))
+    }
+
+    /// Decode one `token` from `cache` (O(1) in sequence length): feed it, advance the caches, and
+    /// return the next-position logits `(vocab,)`.
+    pub fn decode_step(&self, token: u32, cache: &mut DecodeCache) -> Result<Tensor> {
+        let pos = cache.seqlen;
+        let ids_t = Tensor::from_vec(vec![token], (1, 1), &self.device)?;
+        let mut h = self.embed(&ids_t)?;
+        for (layer, lc) in self.layers.iter().zip(cache.layers.iter_mut()) {
+            h = layer.forward_cached(&h, &self.rope, lc, pos)?;
+        }
+        cache.seqlen += 1;
+        let last = rms_norm(&h, &self.final_ln, self.cfg.rms_eps)?.i((0, 0))?; // (hidden,)
+        self.lm_head_vec(&last)
     }
 }
 
