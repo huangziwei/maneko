@@ -9,7 +9,10 @@ pub const MANEKO_REPO: &str = "zwaiwng/maneko";
 
 /// Resolve `file` from `repo` via the HF cache / hub (honours `HF_HOME`).
 pub fn hf_file(repo: &str, file: &str) -> Result<PathBuf> {
-    let api = hf_hub::api::sync::Api::new()?;
+    // `from_env` so `HF_HOME` / `HF_ENDPOINT` are honored (the project pins the cache to
+    // `$PWD/.cache/huggingface`). `Api::new()` / `ApiBuilder::new` ignore `HF_HOME` and hardcode
+    // `~/.cache/huggingface` — matches pocket/irodori, which both use `from_env`.
+    let api = hf_hub::api::sync::ApiBuilder::from_env().build()?;
     Ok(api.model(repo.to_string()).get(file)?)
 }
 

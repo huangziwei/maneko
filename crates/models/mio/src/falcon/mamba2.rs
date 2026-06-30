@@ -11,7 +11,7 @@
 //! incremental decode (state + the last `d_conv-1` conv inputs carry across steps via [`MambaCache`]).
 
 use crate::config::FalconH1Config;
-use candle_core::{Device, Result, Tensor};
+use candle_core::{DType, Device, Result, Tensor};
 use candle_nn::{Conv1d, Conv1dConfig, Module};
 use tts_core::{QLinear, Vb};
 
@@ -30,8 +30,9 @@ pub struct MambaCache {
 
 pub struct Mamba2 {
     in_proj: QLinear,
-    conv1d: Conv1d,       // padding d_conv-1 — the full-sequence (golden) path
-    conv1d_step: Conv1d,  // padding 0, same weights — the cached path (history is prepended manually)
+    conv1d: Conv1d,    // padding d_conv-1 — the full-sequence (golden / prefill-reference) path
+    conv_w: Vec<f32>,  // flat depthwise kernel `(conv_dim · d_conv)` for the hand-rolled cached path
+    conv_b: Vec<f32>,  // conv bias `(conv_dim,)`
     out_proj: QLinear,
     a_log: Vec<f32>,  // (n_heads,)
     d: Vec<f32>,      // (n_heads,)
@@ -55,13 +56,18 @@ impl Mamba2 {
             ..Default::default()
         };
         let conv1d = vb.pp("conv1d").conv1d(conv_dim, conv_dim, cfg.mamba_d_conv, true, conv_cfg)?;
-        // Same depthwise kernel with no padding: the cached path prepends the conv history itself.
-        let step_cfg = Conv1dConfig { padding: 0, groups: conv_dim, ..Default::default() };
-        let conv1d_step = Conv1d::new(conv1d.weight().clone(), conv1d.bias().cloned(), step_cfg);
+        // Flat f32 copies of the depthwise kernel for the cached path's hand-rolled conv — candle's
+        // `Conv1d` routes a depthwise (groups=channels) conv through per-group BLAS GEMM, which
+        // dominates single-token decode (~40% of generation in profiling). The reference `forward`
+        // (prefill / golden) path still uses `conv1d` above. `(conv_dim, 1, d_conv)` flattens
+        // row-major to `c·d_conv + k`.
+        let conv_w = conv1d.weight().to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+        let conv_b = conv1d.bias().expect("conv1d has bias").to_dtype(DType::F32)?.to_vec1::<f32>()?;
         Ok(Self {
             in_proj: vb.pp("in_proj").qlinear(cfg.hidden_size, proj_size, false)?,
             conv1d,
-            conv1d_step,
+            conv_w,
+            conv_b,
             out_proj: vb.pp("out_proj").qlinear(cfg.mamba_d_ssm, cfg.hidden_size, false)?,
             a_log: vb.get(cfg.mamba_n_heads, "A_log")?.to_vec1::<f32>()?,
             d: vb.get(cfg.mamba_n_heads, "D")?.to_vec1::<f32>()?,
@@ -159,10 +165,36 @@ impl Mamba2 {
         // Prepend the cached history, depthwise-conv with no padding (output is exactly the T new
         // positions), then refresh the history to the last d_conv-1 inputs.
         let full = Tensor::cat(&[&cache.conv, &xbc.transpose(1, 2)?], 2)?; // (B, conv_dim, d_conv-1 + T)
-        let conv_out = self.conv1d_step.forward(&full)?; // (B, conv_dim, T)
+        let conv_out = self.depthwise_conv(&full, b, t)?; // (B, conv_dim, T) — hand-rolled, no BLAS
         let keep = self.d_conv - 1;
         cache.conv = full.narrow(2, full.dim(2)? - keep, keep)?.contiguous()?;
         let xbc = conv_out.transpose(1, 2)?.contiguous()?; // (B, T, conv_dim)
         self.finish(&xbc, &gate, &dt, &mut cache.ssm, b, t)
+    }
+
+    /// Hand-rolled depthwise causal conv1d for the cached path: `full` `(B, conv_dim, d_conv-1+T)` →
+    /// `(B, conv_dim, T)`, `out[b,c,ti] = conv_b[c] + Σ_k conv_w[c,k]·full[b,c,ti+k]`. Each channel is
+    /// independent (depthwise), so this is a tight scalar loop — no candle `Conv1d` / BLAS dispatch.
+    fn depthwise_conv(&self, full: &Tensor, b: usize, t: usize) -> Result<Tensor> {
+        let (cd, k) = (self.conv_dim, self.d_conv);
+        let w = k - 1 + t; // input width
+        let fv = full.flatten_all()?.to_vec1::<f32>()?; // (b · conv_dim · w), row-major
+        let mut out = vec![0f32; b * cd * t];
+        for bi in 0..b {
+            for c in 0..cd {
+                let wbase = c * k;
+                let ibase = (bi * cd + c) * w;
+                let obase = (bi * cd + c) * t;
+                let bias = self.conv_b[c];
+                for ti in 0..t {
+                    let mut acc = bias;
+                    for kk in 0..k {
+                        acc += self.conv_w[wbase + kk] * fv[ibase + ti + kk];
+                    }
+                    out[obase + ti] = acc;
+                }
+            }
+        }
+        Tensor::from_vec(out, (b, cd, t), full.device())
     }
 }

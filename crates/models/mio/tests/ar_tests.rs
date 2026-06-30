@@ -55,3 +55,37 @@ fn ar_forward_matches_golden() -> anyhow::Result<()> {
     assert!(failed.is_empty(), "stage parity failures: {failed:?}");
     Ok(())
 }
+
+/// The incremental cached decode (`prefill` + `decode_step`, which use the hand-rolled depthwise
+/// conv) must match the reference full `forward` (candle `Conv1d`) at the logit level, in pure f32.
+/// This isolates the cached path's numerics from q8 rounding — a large divergence here is a conv /
+/// recurrence bug; ~1e-5 is the expected f32-accumulation floor.
+#[test]
+#[ignore = "needs f32 AR weights (Aratako/MioTTS-0.1B model.safetensors)"]
+fn cached_decode_matches_full_forward() -> anyhow::Result<()> {
+    let dev = Device::Cpu;
+    let model = FalconH1::from_hf(&dev)?;
+    // Arbitrary but fixed valid ids (< vocab 78336), including some speech-range (≥65536) tokens.
+    let ids: Vec<u32> = vec![1, 64, 2048, 511, 12, 65536, 65800, 300, 7, 4096, 22, 65999];
+    let n = ids.len();
+
+    // Reference: full forward over the whole sequence; position n-1's logits predict token n.
+    let ids_t = Tensor::from_vec(ids.iter().map(|&x| x as i64).collect::<Vec<_>>(), (1, n), &dev)?;
+    let (_, logits_full) = model.forward(&ids_t)?;
+    let ref_last = logits_full.i((0, n - 1))?; // (vocab,)
+
+    // Cached: prefill the whole sequence → its last-position logits (also predict token n).
+    let (pref_last, _) = model.prefill(&ids)?;
+    let d_prefill = max_abs_diff(&ref_last, &pref_last)?;
+    eprintln!("prefill     vs forward last-logits: max_abs_diff = {d_prefill:.3e}");
+
+    // Cached: prefill all but the last token, then decode it → logits predicting token n.
+    let (_, mut cache) = model.prefill(&ids[..n - 1])?;
+    let logits_step = model.decode_step(ids[n - 1], &mut cache)?;
+    let d_step = max_abs_diff(&ref_last, &logits_step)?;
+    eprintln!("decode_step vs forward last-logits: max_abs_diff = {d_step:.3e}");
+
+    assert!(d_prefill < 1e-2, "prefill diverges from forward: {d_prefill:.3e}");
+    assert!(d_step < 1e-2, "decode_step diverges from forward: {d_step:.3e}");
+    Ok(())
+}

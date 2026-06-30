@@ -199,9 +199,11 @@ fn generate_irodori(args: &GenerateArgs, device: Device) -> Result<(Tensor, usiz
 /// WavLM), then text → 24 kHz wav. `--gguf` forces a local q8 GGUF; q8 otherwise resolves from
 /// the maneko HF repo.
 fn generate_mio(args: &GenerateArgs, device: Device) -> Result<(Tensor, usize)> {
+    let t_load = Instant::now();
     let mut mio = mio_tts::Mio::load_default(&device, args.gguf.as_deref())?;
     mio.load_voice_encoder(mio_tts::weights::resolve_wavlm(None)?)?;
     let global = mio.encode_ref_file(resolve_mio_ref(args.voice.as_deref())?)?;
+    let setup_s = t_load.elapsed().as_secs_f64();
 
     // The English DEFAULT_TEXT is a pocket placeholder; mio is Japanese — fall back to its own.
     let raw = if args.text == DEFAULT_TEXT { MIO_DEFAULT_TEXT } else { args.text.as_str() };
@@ -212,7 +214,32 @@ fn generate_mio(args: &GenerateArgs, device: Device) -> Result<(Tensor, usize)> 
         top_p: args.top_p,
         seed: args.seed,
     };
-    let wav = mio.generate_with(&text, &global, &cfg)?;
+
+    // Split the sequential AR (the realtime-critical path) from the one-shot codec decode, and
+    // report the synthesis RTF apart from one-time setup (model load + on-device voice clone) —
+    // the steady-state number that decides the realtime go/no-go.
+    let t_ar = Instant::now();
+    let speech = mio.generate_tokens_with(&text, &cfg)?;
+    let ar_s = t_ar.elapsed().as_secs_f64();
+    let t_dec = Instant::now();
+    let wav = mio.decode_speech(&speech, &global)?;
+    let dec_s = t_dec.elapsed().as_secs_f64();
+
+    if !args.quiet {
+        let n_tok = speech.len();
+        let secs = *wav.dims().last().unwrap_or(&0) as f64 / mio.sample_rate() as f64;
+        let synth_s = ar_s + dec_s;
+        println!(
+            "  setup {:.2}s · AR {:.2}s ({} tok, {:.1} tok/s) · codec {:.2}s · synth {:.2}s → synth-RTF {:.2}x",
+            setup_s,
+            ar_s,
+            n_tok,
+            n_tok as f64 / ar_s.max(1e-6),
+            dec_s,
+            synth_s,
+            synth_s / secs.max(1e-6),
+        );
+    }
     Ok((wav, mio.sample_rate()))
 }
 
