@@ -173,6 +173,13 @@ impl Block {
     }
 }
 
+/// RoPE table length (frames) for the codec transformers. The AR emits up to `max_tokens` speech
+/// tokens (700 by default) and the codec runs **2 frames/token**, so the config's `max_seq_len*2`
+/// (=1024 ≈ 512 tokens) overruns on long clips — `decode_speech` then panics in `rope.apply`. RoPE
+/// values are a pure function of position, so a larger table is bit-identical for existing
+/// positions; size it for ~2048 tokens (4096 frames, ≈82 s @ 24 kHz) to cover any realistic clip.
+const ROPE_MAX_FRAMES: usize = 4096;
+
 /// A MioCodec transformer stack (`wave_prenet` / `wave_decoder`).
 pub struct Transformer {
     layers: Vec<Block>,
@@ -185,7 +192,7 @@ pub struct Transformer {
 impl Transformer {
     pub fn load(vb: VarBuilder, cfg: &TfConfig, device: &Device) -> Result<Self> {
         let head_dim = cfg.dim / cfg.n_heads;
-        let rope = RotaryEmbedding::new(head_dim, cfg.max_seq_len * 2, cfg.rope_theta, device)?;
+        let rope = RotaryEmbedding::new(head_dim, ROPE_MAX_FRAMES.max(cfg.max_seq_len * 2), cfg.rope_theta, device)?;
         let mk_norm = |vb: VarBuilder| -> Result<Norm> {
             if cfg.use_adaln_zero {
                 let cd = cfg.adanorm_condition_dim.expect("adaln needs condition dim");

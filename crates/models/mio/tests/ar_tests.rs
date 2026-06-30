@@ -65,27 +65,35 @@ fn ar_forward_matches_golden() -> anyhow::Result<()> {
 fn cached_decode_matches_full_forward() -> anyhow::Result<()> {
     let dev = Device::Cpu;
     let model = FalconH1::from_hf(&dev)?;
-    // Arbitrary but fixed valid ids (< vocab 78336), including some speech-range (≥65536) tokens.
-    let ids: Vec<u32> = vec![1, 64, 2048, 511, 12, 65536, 65800, 300, 7, 4096, 22, 65999];
-    let n = ids.len();
+    // A long fixed pseudo-sequence (deterministic, < vocab 78336, with speech-range ≥65536 tokens)
+    // so the cached attention is exercised at large Tc — a hand-rolled-attention bug that only
+    // shows up for long contexts would surface here, not in a handful of tokens.
+    let n = 192usize;
+    let ids: Vec<u32> = (0..n).map(|i| ((i * 1009 + 17) % 78336) as u32).collect();
 
-    // Reference: full forward over the whole sequence; position n-1's logits predict token n.
+    // Reference: full forward over the whole sequence (logits at every position).
     let ids_t = Tensor::from_vec(ids.iter().map(|&x| x as i64).collect::<Vec<_>>(), (1, n), &dev)?;
     let (_, logits_full) = model.forward(&ids_t)?;
-    let ref_last = logits_full.i((0, n - 1))?; // (vocab,)
 
-    // Cached: prefill the whole sequence → its last-position logits (also predict token n).
+    // prefill(all) last-position logits must match forward's last position.
     let (pref_last, _) = model.prefill(&ids)?;
-    let d_prefill = max_abs_diff(&ref_last, &pref_last)?;
-    eprintln!("prefill     vs forward last-logits: max_abs_diff = {d_prefill:.3e}");
+    let d_prefill = max_abs_diff(&logits_full.i((0, n - 1))?, &pref_last)?;
+    eprintln!("prefill(all) vs forward last:        max_abs_diff = {d_prefill:.3e}");
 
-    // Cached: prefill all but the last token, then decode it → logits predicting token n.
-    let (_, mut cache) = model.prefill(&ids[..n - 1])?;
-    let logits_step = model.decode_step(ids[n - 1], &mut cache)?;
-    let d_step = max_abs_diff(&ref_last, &logits_step)?;
-    eprintln!("decode_step vs forward last-logits: max_abs_diff = {d_step:.3e}");
+    // Incremental decode: prefill the first token, then step the rest, comparing the logits after
+    // feeding token i (predict i+1) to forward's position i — across the whole growing context.
+    let (mut step_logits, mut cache) = model.prefill(&ids[..1])?;
+    let mut worst = max_abs_diff(&logits_full.i((0, 0))?, &step_logits)?;
+    for i in 1..n {
+        step_logits = model.decode_step(ids[i], &mut cache)?;
+        let d = max_abs_diff(&logits_full.i((0, i))?, &step_logits)?;
+        if d > worst {
+            worst = d;
+        }
+    }
+    eprintln!("decode_step vs forward (all {n} pos):  max_abs_diff = {worst:.3e}");
 
     assert!(d_prefill < 1e-2, "prefill diverges from forward: {d_prefill:.3e}");
-    assert!(d_step < 1e-2, "decode_step diverges from forward: {d_step:.3e}");
+    assert!(worst < 1e-2, "decode_step diverges from forward at some position: {worst:.3e}");
     Ok(())
 }

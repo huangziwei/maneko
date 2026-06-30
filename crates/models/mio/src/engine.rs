@@ -17,6 +17,31 @@ use crate::text::MioTokenizer;
 use anyhow::Context;
 use candle_core::{Device, Tensor};
 
+/// Cap candle's CPU worker pool to physical cores on x86_64 (logical/2) before the first matmul.
+/// candle's `gemm`/BLAS backend sizes its pool from `RAYON_NUM_THREADS`; oversubscribing the
+/// hyper-threaded siblings regresses these memory-bound batch-1 matmuls (measured on an i9-9880H:
+/// 16 threads ≈ 10 tok/s vs 8 ≈ 13). An explicit `RAYON_NUM_THREADS` always wins. Mirrors pocket's
+/// `init_rayon_pool`; called from the [`Mio`] constructors (before voice-encode / generation matmuls).
+fn init_thread_cap() {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::sync::Once;
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            if std::env::var_os("RAYON_NUM_THREADS").is_some() {
+                return;
+            }
+            let logical = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+            let threads = (logical / 2).max(1);
+            // SAFETY: runs once during model construction, before candle spawns any worker thread
+            // or reads the env, so there is no concurrent env access.
+            unsafe {
+                std::env::set_var("RAYON_NUM_THREADS", threads.to_string());
+            }
+        });
+    }
+}
+
 pub struct Mio {
     ar: FalconH1,
     codec: MioCodec,
@@ -29,6 +54,7 @@ impl Mio {
     /// Reference loader: full-precision f32 AR (from `Aratako/MioTTS-0.1B`). Used by the parity
     /// goldens. For deployment prefer [`from_gguf`](Self::from_gguf) (q8 AR, the fast Intel path).
     pub fn from_hf(device: &Device) -> anyhow::Result<Self> {
+        init_thread_cap();
         Ok(Self {
             ar: FalconH1::from_hf(device)?,
             codec: MioCodec::from_hf(device)?,
@@ -42,6 +68,7 @@ impl Mio {
     /// from their HF repos. The fast CPU path — on x86_64 candle's `Q8_0` GEMV needs an AVX2 build
     /// (see the crate-root guard). Resolve the GGUF with [`crate::weights::resolve_ar_q8`].
     pub fn from_gguf(device: &Device, ar_gguf: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
+        init_thread_cap();
         Ok(Self {
             ar: FalconH1::from_gguf(ar_gguf, device)?,
             codec: MioCodec::from_hf(device)?,
