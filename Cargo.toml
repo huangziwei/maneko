@@ -12,6 +12,7 @@ default-members = [
     "crates/core",
     "crates/models/pocket",
     "crates/models/irodori",
+    "crates/models/mio",
     "crates/interfaces/cli",
 ]
 
